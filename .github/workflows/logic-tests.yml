@@ -1,0 +1,41 @@
+name: logic-tests
+
+# 逻辑层是纯 TS、零平台依赖，所以**不需要鸿蒙 SDK** 就能在 CI 上跑全部断言。
+# UI 层（.ets）依赖 DevEco SDK，CI 里不构建 —— 由本机 DevEco / 模拟器负责。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 逻辑层断言 (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 24（原生支持 TS）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 跑测试
+        run: node --test "tests/*.test.ts"
+
+      - name: 架构守卫：logic/ 不得依赖鸿蒙 API
+        run: |
+          if grep -rn "@kit\.\|@ohos\." entry/src/main/ets/logic/ ; then
+            echo "::error::logic/ 里出现了鸿蒙 API 引用 —— 逻辑层必须保持零平台依赖"
+            exit 1
+          fi
+          echo "OK: logic/ 无鸿蒙 API 引用"
+
+      - name: 架构守卫：logic/ 内部 import 必须带 .ts 扩展名
+        run: |
+          # Node ESM 要求扩展名；ArkTS 两种都接受，所以统一带 .ts
+          if grep -rn "from '\./[A-Za-z]*'" entry/src/main/ets/logic/ ; then
+            echo "::error::logic/ 内部的相对 import 必须带 .ts 扩展名"
+            exit 1
+          fi
+          echo "OK: logic/ 内部 import 均带 .ts 扩展名"

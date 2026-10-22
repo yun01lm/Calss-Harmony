@@ -1,0 +1,35 @@
+# ---- HarmonyOS / hvigor 构建产物 ----
+/node_modules
+/oh_modules
+**/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+**/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+*.hap
+*.hsp
+
+# ---- 签名材料（绝不可入库）----
+*.p12
+*.cer
+*.p7b
+/signing/
+
+# ---- 含个人信息的本地文件 ----
+/samples/
+/tools/fixtures/
+/.dsh-drops/
+
+# ---- 系统垃圾 ----
+.DS_Store
+Thumbs.db
+
+# ---- 本地临时文件（截图/日志/脚本）----
+/.tmp/

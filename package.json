@@ -1,0 +1,15 @@
+{
+  "name": "calss-harmony",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "简课表 · 鸿蒙版（纯逻辑层用 Node 原生跑测试，不需要鸿蒙 SDK）",
+  "scripts": {
+    "test": "node --test \"tests/*.test.ts\"",
+    "test:watch": "node --test --watch \"tests/*.test.ts\"",
+    "build": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap --no-daemon"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

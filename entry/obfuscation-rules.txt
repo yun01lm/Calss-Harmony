@@ -1,0 +1,5 @@
+# 与 Android 版 R8 等价的产物混淆；keep 规则随功能落地逐步补充
+-enable-property-obfuscation
+-enable-toplevel-obfuscation
+-enable-filename-obfuscation
+-enable-export-obfuscation

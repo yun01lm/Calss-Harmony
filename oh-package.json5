@@ -1,0 +1,8 @@
+{
+  "modelVersion": "6.0.0",
+  "name": "calss-harmony",
+  "version": "0.1.0",
+  "description": "简课表 · 鸿蒙版（ArkTS / ArkUI 迁移自 Calss-Android）",
+  "dependencies": {},
+  "devDependencies": {}
+}
