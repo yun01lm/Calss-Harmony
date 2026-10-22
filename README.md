@@ -13,8 +13,8 @@
 | 0B | 纯逻辑层移植：**9/9 模块完成（102 条断言）** | ✅ |
 | 0C | DevEco 环境 + 模拟器跑通（Mate 90 Pro / HarmonyOS 7.0.0） | ✅ |
 | 0D | 三个 spike（ArkUI 周视图 / PDF Kit 取文本 / Core Vision OCR） | ⬜ |
-| 1 | 数据层：schema/迁移/启动选表 ✅（21 断言）；`platform/Rdb.ts` 接线中 | 🔄 |
-| 2 | 周视图与编辑 | ⬜ |
+| 1 | 数据层：schema / 迁移 / 建库决策 / `SqlRunner` / `ScheduleStore` + `platform/Rdb.ts`（**161 断言 + 实机建库·迁移·持久化**） | ✅ |
+| 2 | 周视图与编辑 | 🔄 下一步 |
 | 3 | 作息 / 多课表 / 导入 | ⬜ |
 | 4 | 验收（启动、体积、零权限核对） | ⬜ |
 
