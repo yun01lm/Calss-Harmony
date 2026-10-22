@@ -14,7 +14,7 @@
 | 0C | DevEco 环境 + 模拟器跑通（Mate 90 Pro / HarmonyOS 7.0.0） | ✅ |
 | 0D | 三个 spike（ArkUI 周视图 / PDF Kit 取文本 / Core Vision OCR） | ⬜ |
 | 1 | 数据层：schema / 迁移 / 建库决策 / `SqlRunner` / `ScheduleStore` + `platform/Rdb.ts`（**161 断言 + 实机建库·迁移·持久化**） | ✅ |
-| 2 | 周视图与编辑 | 🔄 下一步 |
+| 2 | 周视图：网格 + 翻周 + 详情卡（**188 断言 + 实机**）；新建/编辑课程待阶段 3 | 🔄 |
 | 3 | 作息 / 多课表 / 导入 | ⬜ |
 | 4 | 验收（启动、体积、零权限核对） | ⬜ |
 

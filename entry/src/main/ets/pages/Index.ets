@@ -1,319 +1,493 @@
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import {
-  CellLayout,
-  Conflicts,
-  GridSlot,
-  ListFormatParser,
-  Locations,
-  PdfTextRun,
-  TimetableTextParser,
   WeekCalculator,
+  WeekItems,
   WeekMasks,
+  WeekSelection,
 } from '../logic';
-import { defaultSlots } from '../data/schema';
-import { pickStartupTimetable, TimetableChoice } from '../data/startupRule';
+import { type CourseLike, type EventLike, type ScheduleLike, type WeekItem } from '../logic';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { ScheduleStore } from '../data/ScheduleStore';
-import { Course, CourseSchedule, maskToDb, Snapshot } from '../data/models';
+import { Course, CourseSchedule, maskToDb, Snapshot, TimeSlot } from '../data/models';
+import { WeekGrid } from '../view/WeekGrid';
 
 /**
- * 主页占位（阶段 1）。
+ * 主页：周视图。
  *
- * 它现在同时是**三层的联调面板**：
- * 1. 逻辑层：每段文字都调用 `logic/` 里的真实模块（避免模块没被引用、坏了没人发现）；
- * 2. 数据层：`data/` 的 schema / 迁移 / 启动规则 / ScheduleStore；
- * 3. 平台层：真的打开 `relationalStore`、真的写库、真的关掉重开。
+ * ## 打开即当前周（这是本页最容易做错的地方）
  *
- * 页面上那行"数据库 …"里的每个数字都是从库里查出来的，不是常量。
- * 阶段 2 会整页替换为周视图（WeekGrid + Swiper），届时本页与 `platform/MigrationProbe.ts` 一起删除。
+ * 规则在 `logic/WeekSelection.ts` 里，配合 `autoScrolling` 标记使用：
+ * 1. **程序化翻页整段期间**不上报（不是只忽略最终页）；
+ * 2. 仅当目标页与"当前显示的周"不同才上报（瞬时判据）。
+ *
+ * 违反任何一条的症状都很具体：前者会让箭头跳周时把页码记成中间页，
+ * 后者会让"滑回刚才程序翻过的那页"被永久忽略（标题说第 6 周、网格显示第 5 周）。
+ *
+ * ## 启动策略
+ *
+ * 首帧不等数据：本页先画"第 1 周 + 空网格"，数据到达后再换成真实课表。
+ * 数据库仍然是**用时才打开**（`EntryAbility.onCreate` 里什么都不做）。
  */
 @Entry
 @Component
 struct Index {
-  /** 本学期的"第 1 周周一"，来自数据库（snapshot.timetable.startDateEpochDay）；加载前先按当周兜底 */
-  @State semesterStartEpochDay: number = WeekCalculator.startDateForWeek(
-    1,
-    WeekCalculator.todayEpochDay()
-  );
+  // ---------------- 数据
+  @State loading: boolean = true;
+  @State ready: boolean = false;
+  @State errorLine: string = '';
+  @State snapshot: Snapshot | null = null;
 
-  /** 打开即当前周：由学期起始日 + 今天算出，不硬编码 */
-  @State weekNo: number = WeekCalculator.currentWeek(
-    WeekCalculator.startDateForWeek(1, WeekCalculator.todayEpochDay()),
-    WeekCalculator.todayEpochDay()
-  );
+  // ---------------- 周视图状态
+  @State weeks: WeekItem[][] = [];
+  @State periodCount: number = 12;
+  @State totalWeeks: number = 20;
+  @State currentWeek: number = 1;
+  @State selectedWeek: number = 1;
+  @State followingCurrentWeek: boolean = true;
+  @State semesterStart: number = 0;
+  @State todayEpochDay: number = WeekCalculator.todayEpochDay();
+  @State fontScale: number = 1;
 
-  /** 平台层实况（真的从库里查出来的数字，不是常量） */
-  @State dbLine: string = '数据库：打开中…';
+  // ---------------- 详情卡
+  @State detailTitle: string = '';
+  @State detailLines: string[] = [];
 
-  /** 当前课表的快照摘要（课程名等） */
-  @State snapshotLine: string = '';
-
+  // ---------------- 开发者入口（标题连点 5 次）：迁移演练
+  private titleTaps: number = 0;
+  @State showDev: boolean = false;
   @State probeLines: ProbeLine[] = [];
   @State probing: boolean = false;
 
+  /** 程序化翻页中。不是 @State：它不影响渲染，只用来压住 onChange */
+  private autoScrolling: boolean = false;
+  private controller: SwiperController = new SwiperController();
+
   aboutToAppear(): void {
-    this.refreshDb();
+    this.load();
   }
 
   build() {
-    Scroll() {
-      Column({ space: 8 }) {
-        Text('简课表')
-          .fontSize(30)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#3B3430')
-
-        Text('鸿蒙版 · 数据层已接 relationalStore + ScheduleStore')
-          .fontSize(14)
-          .fontColor('#7A6E66')
-
-        Text(`第 ${this.weekNo} 周`)
-          .fontSize(22)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#E07A5F')
-          .margin({ top: 20 })
-
-        Text(this.weekRangeText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.maskText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.locationText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.conflictText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.cellText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.timetableText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.pdfText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Text(this.dataText())
-          .fontSize(12)
-          .fontColor('#7A6E66')
-
-        Divider().margin({ top: 10, bottom: 6 })
-
-        Text(this.dbLine)
-          .fontSize(12)
-          .fontColor('#2E7D32')
-          .width('100%')
-
-        if (this.snapshotLine.length > 0) {
-          Text(this.snapshotLine)
-            .fontSize(11)
-            .fontColor('#7A6E66')
-            .width('100%')
-        }
-
-        Button('写入 1 门测试课（验证真持久化）')
-          .fontSize(13)
-          .width('100%')
-          .margin({ top: 6 })
-          .backgroundColor('#E07A5F')
-          .onClick(() => {
-            this.writeSampleCourse();
-          })
-
-        Button('清空测试课')
-          .fontSize(13)
-          .width('100%')
-          .backgroundColor('#BDB3AB')
-          .onClick(() => {
-            this.clearSampleCourse();
-          })
-
-        Button(this.probing ? '迁移演练进行中…' : '数据层自检（迁移演练）')
-          .fontSize(13)
-          .width('100%')
-          .margin({ top: 6 })
-          .backgroundColor('#5B7C99')
-          .enabled(!this.probing)
-          .onClick(() => {
-            this.runProbe();
-          })
-
-        if (this.probeLines.length > 0) {
-          Column({ space: 6 }) {
-            ForEach(this.probeLines, (line: ProbeLine) => {
-              Row({ space: 6 }) {
-                Text(line.ok ? '✓' : '✗')
-                  .fontSize(14)
-                  .fontColor(line.ok ? '#2E7D32' : '#C62828')
-                Column({ space: 2 }) {
-                  Text(line.label)
-                    .fontSize(12)
-                    .fontColor('#3B3430')
-                  Text(line.detail)
-                    .fontSize(10)
-                    .fontColor('#9A8F87')
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-              }
-              .width('100%')
-              .alignItems(VerticalAlign.Top)
-            }, (line: ProbeLine) => line.label + '|' + line.detail)
+    Stack({ alignContent: Alignment.Bottom }) {
+      Column() {
+        this.headerBar()
+        if (this.loading) {
+          Column({ space: 8 }) {
+            LoadingProgress().width(36).height(36).color('#E07A5F')
+            Text('正在读取课表…').fontSize(12).fontColor('#7A6E66')
           }
+          .layoutWeight(1)
           .width('100%')
-          .padding(8)
-          .backgroundColor('#FFFFFF')
-          .borderRadius(8)
+          .justifyContent(FlexAlign.Center)
+        } else if (this.errorLine.length > 0) {
+          Column({ space: 8 }) {
+            Text('打开课表失败').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#C62828')
+            Text(this.errorLine).fontSize(12).fontColor('#7A6E66').textAlign(TextAlign.Center)
+            Button('重试')
+              .fontSize(13)
+              .backgroundColor('#E07A5F')
+              .onClick(() => {
+                this.errorLine = '';
+                this.loading = true;
+                this.load();
+              })
+          }
+          .layoutWeight(1)
+          .width('100%')
+          .padding(24)
+          .justifyContent(FlexAlign.Center)
+        } else {
+          this.weekBar()
+          this.pager()
         }
-
-        Button('测试交互：+1 周')
-          .margin({ top: 14 })
-          .backgroundColor('#E07A5F')
-          .onClick(() => {
-            this.weekNo = this.weekNo + 1;
-          })
-
-        Text('下一步：周视图（WeekGrid + Swiper）→ 导入流程')
-          .fontSize(12)
-          .fontColor('#7A6E66')
-          .margin({ top: 26, bottom: 24 })
+        if (this.showDev) {
+          this.devPanel()
+        }
       }
       .width('100%')
-      .padding(16)
+      .height('100%')
+      .backgroundColor('#FFF9F4')
+
+      if (this.detailTitle.length > 0) {
+        this.detailCard()
+      }
     }
     .width('100%')
     .height('100%')
-    .align(Alignment.Top)
-    .backgroundColor('#FFF9F4')
   }
 
-  // ---------------------------------------------------------------- 平台层
+  // ---------------------------------------------------------------- 顶栏
 
-  /** 打开真实数据库 → 保证结构最新 → 用 ScheduleStore 读快照 */
-  private async refreshDb(): Promise<void> {
+  @Builder
+  headerBar() {
+    Row() {
+      Column({ space: 2 }) {
+        Text('简课表')
+          .fontSize(22)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#3B3430')
+          .onClick(() => {
+            // 开发者入口：连点 5 次打开迁移演练（普通使用碰不到）
+            this.titleTaps++;
+            if (this.titleTaps >= 5) {
+              this.titleTaps = 0;
+              this.showDev = !this.showDev;
+            }
+          })
+        Text(this.timetableName())
+          .fontSize(10)
+          .fontColor('#A89C93')
+      }
+      .alignItems(HorizontalAlign.Start)
+
+      Blank()
+
+      if (this.currentWeek > this.totalWeeks) {
+        Text('学期已结束')
+          .fontSize(11)
+          .fontColor('#A89C93')
+      }
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 12, bottom: 6 })
+  }
+
+  // ---------------------------------------------------------------- 周次条
+
+  @Builder
+  weekBar() {
+    Row({ space: 6 }) {
+      Button('‹')
+        .width(36)
+        .height(36)
+        .fontSize(20)
+        .backgroundColor('#FFFFFF')
+        .fontColor(this.selectedWeek > 1 ? '#3B3430' : '#D8CEC6')
+        .enabled(this.selectedWeek > 1)
+        .onClick(() => {
+          this.goToWeek(this.selectedWeek - 1);
+        })
+
+      Column({ space: 1 }) {
+        Text(`第 ${this.selectedWeek} 周`)
+          .fontSize(18)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#E07A5F')
+        Text(this.weekRangeText())
+          .fontSize(10)
+          .fontColor('#7A6E66')
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Center)
+
+      Button('›')
+        .width(36)
+        .height(36)
+        .fontSize(20)
+        .backgroundColor('#FFFFFF')
+        .fontColor(this.selectedWeek < this.totalWeeks ? '#3B3430' : '#D8CEC6')
+        .enabled(this.selectedWeek < this.totalWeeks)
+        .onClick(() => {
+          this.goToWeek(this.selectedWeek + 1);
+        })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, bottom: 4 })
+
+    Row() {
+      if (!this.followingCurrentWeek) {
+        Button('回到本周（第 ' + this.currentWeek + ' 周）')
+          .fontSize(11)
+          .height(26)
+          .backgroundColor('#F3E6DC')
+          .fontColor('#B4664C')
+          .onClick(() => {
+            this.goToCurrentWeek();
+          })
+      } else {
+        Text(this.isEmptyTimetable() ? '还没有课程' : '本周')
+          .fontSize(10)
+          .fontColor('#A89C93')
+      }
+      Blank()
+      Text(this.gridSummary())
+        .fontSize(10)
+        .fontColor('#A89C93')
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, bottom: 6 })
+  }
+
+  // ---------------------------------------------------------------- 翻页
+
+  @Builder
+  pager() {
+    Swiper(this.controller) {
+      ForEach(this.weekNumbers(), (week: number) => {
+        WeekGrid({
+          slots: this.slots(),
+          periodCount: this.periodCount,
+          items: WeekItems.itemsOf(this.weeks, week),
+          weekDates: this.weekDates(week),
+          todayEpochDay: this.todayEpochDay,
+          fontScale: this.fontScale,
+          onCellTap: (dayOfWeek: number, period: number) => {
+            this.onCellTap(dayOfWeek, period);
+          },
+          onItemTap: (item: WeekItem) => {
+            this.onItemTap(item);
+          },
+        })
+      }, (week: number) => 'w' + week)
+    }
+    .index(WeekSelection.pageOf(this.selectedWeek))
+    .loop(false)
+    .indicator(false)
+    .cachedCount(1)
+    .duration(300)
+    .layoutWeight(1)
+    .width('100%')
+    .onChange((index: number) => {
+      const pageWeek: number = WeekSelection.weekOfPage(index);
+      // 两条抑制规则：程序化翻页期间一律不听；只有与"当前显示的周"不同才算用户选周
+      if (WeekSelection.shouldReport(pageWeek, this.selectedWeek, this.autoScrolling)) {
+        this.selectedWeek = pageWeek;
+        this.followingCurrentWeek = false;
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------- 详情卡
+
+  @Builder
+  detailCard() {
+    Column({ space: 6 }) {
+      Row() {
+        Text(this.detailTitle)
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .layoutWeight(1)
+        Text('关闭')
+          .fontSize(12)
+          .fontColor('#E07A5F')
+          .onClick(() => {
+            this.detailTitle = '';
+            this.detailLines = [];
+          })
+      }
+      .width('100%')
+
+      ForEach(this.detailLines, (line: string) => {
+        Text(line)
+          .fontSize(12)
+          .fontColor('#7A6E66')
+          .width('100%')
+      }, (line: string, index: number) => 'd' + index)
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor('#FFFFFF')
+    .borderRadius({ topLeft: 16, topRight: 16 })
+    .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+  }
+
+  // ---------------------------------------------------------------- 开发者入口
+
+  @Builder
+  devPanel() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('迁移演练（开发者入口 · 标题连点 5 次开关）')
+          .fontSize(11)
+          .fontColor('#5B7C99')
+          .layoutWeight(1)
+        Text('关闭')
+          .fontSize(11)
+          .fontColor('#E07A5F')
+          .onClick(() => {
+            this.showDev = false;
+          })
+      }
+      .width('100%')
+
+      Button(this.probing ? '演练进行中…' : '在 calss_probe.db 上跑 v1→v2 迁移')
+        .fontSize(12)
+        .height(32)
+        .width('100%')
+        .backgroundColor('#5B7C99')
+        .enabled(!this.probing)
+        .onClick(() => {
+          this.runProbe();
+        })
+
+      Row({ space: 8 }) {
+        Button('写入示例课（4 门）')
+          .fontSize(11)
+          .height(28)
+          .layoutWeight(1)
+          .backgroundColor('#E07A5F')
+          .onClick(() => {
+            this.writeSamples();
+          })
+        Button('清空全部课程')
+          .fontSize(11)
+          .height(28)
+          .layoutWeight(1)
+          .backgroundColor('#BDB3AB')
+          .onClick(() => {
+            this.clearAllCourses();
+          })
+      }
+      .width('100%')
+
+      ForEach(this.probeLines, (line: ProbeLine) => {
+        Row({ space: 4 }) {
+          Text(line.ok ? '✓' : '✗')
+            .fontSize(11)
+            .fontColor(line.ok ? '#2E7D32' : '#C62828')
+          Text(line.label + ' · ' + line.detail)
+            .fontSize(10)
+            .fontColor('#7A6E66')
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
+      }, (line: ProbeLine) => line.label + '|' + line.detail)
+    }
+    .width('100%')
+    .padding(12)
+    .backgroundColor('#F4F7FA')
+    .borderRadius({ topLeft: 12, topRight: 12 })
+  }
+
+  // ---------------------------------------------------------------- 交互
+
+  private goToWeek(week: number): void {
+    const target: number = WeekSelection.clamp(week, this.totalWeeks);
+    if (target === this.selectedWeek) {
+      return;
+    }
+    this.selectedWeek = target;
+    this.followingCurrentWeek = false;
+    this.autoScrolling = true;
+    this.controller.changeIndex(WeekSelection.pageOf(target), true);
+    setTimeout(() => {
+      this.autoScrolling = false;
+    }, WeekSelection.ANIMATION_GUARD_MS);
+  }
+
+  private goToCurrentWeek(): void {
+    const target: number = WeekSelection.initialWeek(this.currentWeek, this.totalWeeks);
+    this.selectedWeek = target;
+    this.followingCurrentWeek = true;
+    this.autoScrolling = true;
+    this.controller.changeIndex(WeekSelection.pageOf(target), true);
+    setTimeout(() => {
+      this.autoScrolling = false;
+    }, WeekSelection.ANIMATION_GUARD_MS);
+  }
+
+  private onCellTap(dayOfWeek: number, period: number): void {
+    const dayName: string = ['一', '二', '三', '四', '五', '六', '日'][dayOfWeek - 1];
+    promptAction.showToast({
+      message: `第 ${this.selectedWeek} 周 · 周${dayName} · 第 ${period} 节（新建课程在阶段 3）`,
+      duration: 1500,
+    });
+  }
+
+  private onItemTap(item: WeekItem): void {
+    if (item.kind === WeekItems.KIND_EVENT) {
+      this.detailTitle = item.title;
+      this.detailLines = ['自定义安排', '备注：' + (item.subtitle.length === 0 ? '（无）' : item.subtitle)];
+      return;
+    }
+    const snap: Snapshot | null = this.snapshot;
+    let teacher: string = '';
+    let location: string = '';
+    if (snap !== null) {
+      for (const c of snap.courses) {
+        if (c.id === item.id) {
+          teacher = c.teacher;
+          location = c.location;
+          break;
+        }
+      }
+    }
+    this.detailTitle = item.title;
+    this.detailLines = [
+      '周' + ['一', '二', '三', '四', '五', '六', '日'][item.dayOfWeek - 1] +
+        ` 第 ${item.startPeriod}-${item.endPeriod} 节`,
+      '教师：' + (teacher.length === 0 ? '（未填）' : teacher),
+      '教室：' + (location.length === 0 ? '（未填）' : location),
+      '周次：' + this.weekMaskTextOf(item),
+    ];
+    if (item.conflicts.length > 0) {
+      this.detailLines.push('⚠ 与《' + item.conflicts.join('》《') + '》时间重叠');
+    }
+  }
+
+  // ---------------------------------------------------------------- 加载
+
+  private async load(): Promise<void> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
-      this.dbLine = '数据库：拿不到 Context';
+      this.loading = false;
+      this.errorLine = '拿不到 Context';
       return;
     }
     try {
       const db: Rdb = await Rdb.open(ctx);
-      const before: number = db.version;
-      const outcome = await db.ensureUpToDate(
+      await db.ensureUpToDate(
         Date.now(),
         WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
       );
-
       const store = new ScheduleStore(db);
       await store.ensureCurrentTimetable(Date.now());
       const snap: Snapshot = await store.snapshot();
-      const name: string = snap.timetable === null ? '（无课表）' : snap.timetable.name;
+      this.snapshot = snap;
 
-      this.dbLine = `数据库 v${outcome.version} · ${outcome.kind}（打开时 v${before}，${outcome.stepCount} 步）` +
-        ` · 《${name}》 · ${snap.slots.length} 节作息 · ${snap.courses.length} 门课` +
-        ` · ${snap.schedules.length} 个时段 · ${snap.events.length} 个安排`;
+      const total: number = snap.timetable === null
+        ? 20
+        : Math.max(1, snap.timetable.totalWeeks);
+      const start: number = snap.timetable === null ? 0 : snap.timetable.startDateEpochDay;
+      const rawCurrent: number = snap.timetable === null
+        ? 1
+        : WeekCalculator.currentWeek(start, this.todayEpochDay);
 
-      if (snap.timetable !== null) {
-        this.semesterStartEpochDay = snap.timetable.startDateEpochDay;
-        this.weekNo = WeekCalculator.currentWeek(
-          snap.timetable.startDateEpochDay,
-          WeekCalculator.todayEpochDay()
-        );
-      }
-      if (snap.courses.length === 0) {
-        this.snapshotLine = '当前课表还没有课程';
-      } else {
-        const first: Course = snap.courses[0];
-        const own: CourseSchedule[] = [];
-        for (const s of snap.schedules) {
-          if (s.courseId === first.id) {
-            own.push(s);
-          }
-        }
-        const slotText: string = own.length === 0
-          ? '无时段'
-          : `周${own[0].dayOfWeek} ${own[0].startPeriod}-${own[0].endPeriod} 节 · ${WeekMasks.format(BigInt(own[0].weekMask))}`;
-        this.snapshotLine = `首门课：${first.name}（${slotText}）`;
-      }
+      this.totalWeeks = total;
+      this.semesterStart = start;
+      this.currentWeek = Math.min(Math.max(rawCurrent, 1), total);
+      this.selectedWeek = WeekSelection.initialWeek(this.currentWeek, total);
+      this.followingCurrentWeek = true;
+
+      this.weeks = WeekItems.build({
+        courses: Index.toCourseLikes(snap.courses),
+        schedules: Index.toScheduleLikes(snap),
+        events: Index.toEventLikes(snap),
+        totalWeeks: total,
+      });
+      this.periodCount = WeekItems.periodCount(snap.slots, this.weeks);
+
+      // 系统字体缩放：格子里的行数要用它来算（放大了就得少画几行，否则文字互相压）
+      // getHostContext() 的静态类型是基类 Context，配置在 UIAbilityContext 上
+      const abilityCtx = ctx as common.UIAbilityContext;
+      const scale: number | undefined = abilityCtx.config.fontSizeScale;
+      this.fontScale = scale === undefined || scale <= 0 ? 1 : scale;
+
+      this.loading = false;
+      this.ready = true;
+
+      // 首帧对齐到当前周：这段时间 Swiper 可能报出"第 1 页"，不能当成用户选周
+      this.autoScrolling = true;
+      setTimeout(() => {
+        this.autoScrolling = false;
+      }, WeekSelection.ANIMATION_GUARD_MS);
     } catch (e) {
       const err = e as Error;
-      this.dbLine = '数据库失败：' + err.message;
-    }
-  }
-
-  /** 打开库并拿到 store（三个按钮共用） */
-  private async openStore(): Promise<ScheduleStore> {
-    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
-    if (ctx === undefined) {
-      throw new Error('拿不到 Context');
-    }
-    const db: Rdb = await Rdb.open(ctx);
-    await db.ensureUpToDate(
-      Date.now(),
-      WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
-    );
-    const store = new ScheduleStore(db);
-    await store.ensureCurrentTimetable(Date.now());
-    return store;
-  }
-
-  /** 往**正式的** calss.db 里写一门课，用来验证"杀进程重启后数据还在" */
-  private async writeSampleCourse(): Promise<void> {
-    try {
-      const store: ScheduleStore = await this.openStore();
-      const course: Course = {
-        id: 0,
-        timetableId: 0,
-        name: '持久化测试',
-        teacher: '自检',
-        location: '思源楼-101',
-        color: 0,
-        category: '',
-        note: '',
-      };
-      const slot: CourseSchedule = {
-        id: 0,
-        courseId: 0,
-        dayOfWeek: 3,
-        startPeriod: 5,
-        endPeriod: 6,
-        weekMask: maskToDb((BigInt(1) << BigInt(16)) - BigInt(1)),
-      };
-      await store.saveCourse(course, [slot]);
-      await this.refreshDb();
-    } catch (e) {
-      const err = e as Error;
-      this.dbLine = '写入失败：' + err.message;
-    }
-  }
-
-  private async clearSampleCourse(): Promise<void> {
-    try {
-      const store: ScheduleStore = await this.openStore();
-      const snap: Snapshot = await store.snapshot();
-      let removed = 0;
-      for (const c of snap.courses) {
-        if (c.name === '持久化测试') {
-          await store.deleteCourse(c.id);
-          removed++;
-        }
-      }
-      await this.refreshDb();
-      if (removed === 0) {
-        this.snapshotLine = '没有"持久化测试"这门课，无需清理';
-      }
-    } catch (e) {
-      const err = e as Error;
-      this.dbLine = '清空失败：' + err.message;
+      this.loading = false;
+      this.errorLine = err.message;
     }
   }
 
@@ -334,81 +508,221 @@ struct Index {
     this.probing = false;
   }
 
-  // ---------------------------------------------------------------- 逻辑层
+  /** 开发者入口用：拿到当前库的 store（数据已就绪时直接复用 store 实例也行，这里统一走一次 open） */
+  private async openStoreForDev(): Promise<ScheduleStore> {
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      throw new Error('拿不到 Context');
+    }
+    const db: Rdb = await Rdb.open(ctx);
+    await db.ensureUpToDate(
+      Date.now(),
+      WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
+    );
+    const store = new ScheduleStore(db);
+    await store.ensureCurrentTimetable(Date.now());
+    return store;
+  }
+
+  /**
+   * 写入 4 门示例课（开发者入口，用来验证网格渲染）。
+   *
+   * 故意让「软件工程」和「大学英语」撞在周一 3-4 节：这样才能看到**并排双道 + 冲突标记**，
+   * 否则这个分支永远没有数据能验到。
+   */
+  private async writeSamples(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStoreForDev();
+      const everyWeek: number = maskToDb((BigInt(1) << BigInt(16)) - BigInt(1));
+      const oddWeeks: number = maskToDb(BigInt(21845)); // 1,3,5…15 周
+
+      await store.saveCourse(this.sampleCourse('软件工程', '张老师', '本部-计算机基础实验室-2(503-504)'), [
+        this.sampleSchedule(1, 3, 4, everyWeek),
+      ]);
+      await store.saveCourse(this.sampleCourse('大学英语', '刘老师', '外语楼-202'), [
+        this.sampleSchedule(1, 3, 4, everyWeek),
+      ]);
+      await store.saveCourse(this.sampleCourse('操作系统', '李老师', '思源楼-301'), [
+        this.sampleSchedule(3, 5, 6, everyWeek),
+      ]);
+      await store.saveCourse(this.sampleCourse('高等数学', '王老师', '1-101'), [
+        this.sampleSchedule(5, 1, 2, oddWeeks),
+      ]);
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      this.errorLine = '写入示例课失败：' + err.message;
+    }
+  }
+
+  private async clearAllCourses(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStoreForDev();
+      const snap: Snapshot = await store.snapshot();
+      for (const c of snap.courses) {
+        await store.deleteCourse(c.id);
+      }
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      this.errorLine = '清空失败：' + err.message;
+    }
+  }
+
+  private sampleCourse(name: string, teacher: string, location: string): Course {
+    const course: Course = {
+      id: 0,
+      timetableId: 0,
+      name: name,
+      teacher: teacher,
+      location: location,
+      color: 0,
+      category: '',
+      note: '',
+    };
+    return course;
+  }
+
+  private sampleSchedule(
+    dayOfWeek: number,
+    startPeriod: number,
+    endPeriod: number,
+    weekMask: number
+  ): CourseSchedule {
+    const schedule: CourseSchedule = {
+      id: 0,
+      courseId: 0,
+      dayOfWeek: dayOfWeek,
+      startPeriod: startPeriod,
+      endPeriod: endPeriod,
+      weekMask: weekMask,
+    };
+    return schedule;
+  }
+
+  // ---------------------------------------------------------------- 视图小工具
+
+  private timetableName(): string {
+    const snap: Snapshot | null = this.snapshot;
+    if (snap === null || snap.timetable === null) {
+      return '';
+    }
+    return snap.timetable.name + ' · ' + snap.timetable.totalWeeks + ' 周';
+  }
+
+  private slots(): TimeSlot[] {
+    const snap: Snapshot | null = this.snapshot;
+    return snap === null ? [] : snap.slots;
+  }
+
+  private weekNumbers(): number[] {
+    const out: number[] = [];
+    for (let w = 1; w <= this.totalWeeks; w++) {
+      out.push(w);
+    }
+    return out;
+  }
+
+  /** 本周 7 天的 epochDay（周一→周日）；没有学期设置时返回空数组，表头只显示"周几" */
+  private weekDates(week: number): number[] {
+    if (this.semesterStart === 0) {
+      return [];
+    }
+    const out: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      out.push(this.semesterStart + (week - 1) * 7 + i);
+    }
+    return out;
+  }
 
   private weekRangeText(): string {
-    // 第 N 周的周一 = 开学日 + (N-1) 周 —— 与 Android 版 WeekGrid 的算法完全一致
-    const monday = this.semesterStartEpochDay + (this.weekNo - 1) * WeekCalculator.DAYS_PER_WEEK;
-    const start = WeekCalculator.isoDate(this.semesterStartEpochDay);
-    return `第 ${this.weekNo} 周的周一 ${WeekCalculator.isoDate(monday)} · 开学 ${start}`;
-  }
-
-  private maskText(): string {
-    const mask = WeekMasks.parse('1-15周(单)');
-    return `单双周 "1-15周(单)" → ${WeekMasks.format(mask)}`;
-  }
-
-  private locationText(): string {
-    return `教室 ${Locations.shortLocation('本部-计算机基础实验室-2(503-504)')}`;
-  }
-
-  private conflictText(): string {
-    const items: GridSlot[] = [
-      { dayOfWeek: 1, startPeriod: 3, endPeriod: 4, title: '软件工程' },
-      { dayOfWeek: 1, startPeriod: 3, endPeriod: 4, title: '操作系统' },
-    ];
-    const marks = Conflicts.markConflicts(items);
-    const lanes = Conflicts.lanesFor(items);
-    return `重叠两门 → 冲突《${marks[0].conflicts[0]}》· 并排 ${lanes[0].laneCount} 道`;
-  }
-
-  private cellText(): string {
-    const r = CellLayout.cellLines(64, 1.0);
-    return `64vp/1.0× 格子 → 课名 ${r.nameLines} 行 + 教室 ${r.locationLines} 行`;
-  }
-
-  /** 作息表文本解析：用"粘贴文本"形态的样例现场跑一遍（真实样本断言在 tests/ 里） */
-  private timetableText(): string {
-    const sample = '上午 1 8: 00-8: 45\n课间 8: 45-8: 50\n上午 2 8: 50-9: 35';
-    const parsed = TimetableTextParser.parse(TimetableTextParser.linesFromText(sample));
-    if (parsed.periods.length === 0) {
-      return '作息解析：未识别';
+    if (this.semesterStart === 0) {
+      return '未设置开学日期';
     }
-    const first = parsed.periods[0];
-    return `作息解析 ${parsed.periods.length} 节 · 第 1 节 ${first.startMinute / 60} 点起`;
-  }
-
-  /** PDF 行解析：用一段**合成**的列表式数据现场跑一遍（真实夹具含姓名，不进仓库） */
-  private pdfText(): string {
-    const runs: PdfTextRun[] = [
-      { text: '星期四', x: 30, y: 400, endX: 60, fontSize: 10, page: 1 },
-      { text: '5-6', x: 80, y: 405, endX: 110, fontSize: 10, page: 1 },
-      { text: '软件工程★', x: 150, y: 405, endX: 210, fontSize: 10, page: 1 },
-      {
-        text: '周数:1-16 地点:思源楼-301 教师:张老师',
-        x: 300,
-        y: 405,
-        endX: 360,
-        fontSize: 10,
-        page: 1,
-      },
-    ];
-    const parsed = ListFormatParser.parse(runs);
-    if (parsed.courses.length === 0) {
-      return 'PDF 解析：未识别';
+    const monday: number = this.semesterStart + (this.selectedWeek - 1) * 7;
+    const sunday: number = monday + 6;
+    const a = WeekCalculator.dateOf(monday);
+    const b = WeekCalculator.dateOf(sunday);
+    let text: string = `${a.month}/${a.day} – ${b.month}/${b.day}`;
+    if (this.followingCurrentWeek) {
+      text = text + ' · 本周';
     }
-    const course = parsed.courses[0];
-    const slot = course.schedules[0];
-    return `PDF 解析 ${parsed.courses.length} 门 · ${course.name} 周${slot.dayOfWeek} ${slot.startPeriod}-${slot.endPeriod} 节`;
+    return text;
   }
 
-  /** 数据层：默认作息条数 + 启动选表规则（真实 SQL 在 tests/ 里用 SQLite 验过） */
-  private dataText(): string {
-    const options: TimetableChoice[] = [
-      { id: 1, isPrimary: true, createdAt: 100 },
-      { id: 2, isPrimary: false, createdAt: 200 },
-    ];
-    const picked = pickStartupTimetable(options, 2, false);
-    return `数据层 ${defaultSlots().length} 节默认作息 · 启动打开第 ${picked} 张（上次用的那张）`;
+  private gridSummary(): string {
+    return `${this.periodCount} 节`;
+  }
+
+  private isEmptyTimetable(): boolean {
+    const snap: Snapshot | null = this.snapshot;
+    return snap === null || (snap.courses.length === 0 && snap.events.length === 0);
+  }
+
+  private weekMaskTextOf(item: WeekItem): string {
+    const snap: Snapshot | null = this.snapshot;
+    if (snap === null) {
+      return '';
+    }
+    for (const s of snap.schedules) {
+      if (s.courseId === item.id && s.dayOfWeek === item.dayOfWeek &&
+        s.startPeriod === item.startPeriod && s.endPeriod === item.endPeriod) {
+        return WeekMasks.format(BigInt(s.weekMask));
+      }
+    }
+    return '本周';
+  }
+
+  // ---------------------------------------------------------------- 模型转换
+
+  /**
+   * `data/models` 的对象换成 `logic` 需要的最小接口。
+   * 显式逐字段翻译（不用展开运算符）：字段改名时编译期就会报，而不是运行期悄悄变成 undefined。
+   */
+  private static toCourseLikes(courses: Course[]): CourseLike[] {
+    const out: CourseLike[] = [];
+    for (const c of courses) {
+      const like: CourseLike = {
+        id: c.id,
+        name: c.name,
+        location: c.location,
+        color: c.color,
+      };
+      out.push(like);
+    }
+    return out;
+  }
+
+  private static toScheduleLikes(snap: Snapshot): ScheduleLike[] {
+    const out: ScheduleLike[] = [];
+    for (const s of snap.schedules) {
+      const like: ScheduleLike = {
+        courseId: s.courseId,
+        dayOfWeek: s.dayOfWeek,
+        startPeriod: s.startPeriod,
+        endPeriod: s.endPeriod,
+        weekMask: s.weekMask,
+      };
+      out.push(like);
+    }
+    return out;
+  }
+
+  private static toEventLikes(snap: Snapshot): EventLike[] {
+    const out: EventLike[] = [];
+    for (const e of snap.events) {
+      const like: EventLike = {
+        id: e.id,
+        title: e.title,
+        dayOfWeek: e.dayOfWeek,
+        startPeriod: e.startPeriod,
+        endPeriod: e.endPeriod,
+        weekMask: e.weekMask,
+        color: e.color,
+        note: e.note,
+      };
+      out.push(like);
+    }
+    return out;
   }
 }

@@ -15,8 +15,12 @@
 | `data/ScheduleRepository.kt` | `data/ScheduleStore.ts`（依赖 `data/SqlRunner.ts` 接口） | ✅ 26 断言（真 SQLite：启动选表/建表/删除清理/覆盖与合并导入/快照） |
 | `data/db/*`（Room、迁移 v1→v2） | `data/schema.ts` + `data/migrations.ts` + `data/bootstrap.ts` | ✅ 33 断言（真 SQLite：建库/迁移/级联/导入三态/启动选表/幂等/五种版本状态） |
 | `AppDatabase.get()` 懒加载单例 | `platform/Rdb.ts` | ✅ 实机验证（见下方「设备侧验证」） |
-| `ui/home/WeekGrid.kt` | `view/WeekGrid.ets` | ⬜ |
-| `ui/home/HomeScreen.kt` | `pages/Index.ets` | ⬜ |
+| `HomeViewModel.itemsByWeek` / `periodCount` | `logic/WeekItems.ts` | ✅ 12 断言（周次命中/脏数据/冲突/安排/行数） |
+| `HomeViewModel.colorFor` + `PALETTE` | `logic/Colors.ts` | ✅ 3 断言（含 Kotlin `hashCode` 逐值对齐） |
+| `HomeScreen` 的「打开即当前周」抑制规则 | `logic/WeekSelection.ts` | ✅ 12 断言（8 个时序复演） |
+| `ui/home/WeekGrid.kt` | `view/WeekGrid.ets` | ✅ 实机（见下方存证 15–20） |
+| `ui/home/HomeScreen.kt` | `pages/Index.ets` | 🔄 周视图 + 翻周 + 详情卡完成；新建/编辑课程待阶段 3 |
+| `ui/home/ItemDetailDialog.kt` | `pages/Index.ets` 底部详情卡 | 🔄 只读展示完成，编辑待阶段 3 |
 | `ui/pdfimport/*` | `view/import/*` + `platform/Pdf.ts` | ⬜ |
 | `ui/timetableimport/*` | `view/timetableimport/*` + `platform/Ocr.ts` | ⬜ |
 | `ui/timetable/*`（多课表） | `view/timetable/*` | ⬜ |
@@ -24,11 +28,12 @@
 | Room | `relationalStore` | ✅ 已验证（事务执行 DDL/DML、`user_version` 读写、`sqlite_master` 查询） |
 | pdfbox-android | PDF Kit `getTextContent()` / ArkWeb + pdf.js | ⬜ 待 spike |
 | ML Kit 中文 OCR | Core Vision Kit `textRecognition` | ⬜ 待 spike |
-| `tools/verify_*.{py,ps1}`（7 套） | `tests/*.test.ts`（Node 内置 test） | 🔄 9 套 / 135 断言已移植 |
+| `tools/verify_*.{py,ps1}`（7 套） | `tests/*.test.ts`（Node 内置 test） | 🔄 12 套 / 188 断言已移植 |
 
 ## 设备侧验证（模拟器，HarmonyOS 7.0 / API 26）
 
-`platform/MigrationProbe.ts` 是**临时验收工具**（阶段 2 做周视图时删除）。设备沙箱不可读写，
+`platform/MigrationProbe.ts` 是**临时验收工具**，现在藏在**开发者入口**里（标题连点 5 次），
+不占界面、也不会成为死代码（它被页面引用，每次构建都会编译）。设备沙箱不可读写，
 没法像桌面那样塞一个 v1 库进去，所以在设备上造一个独立的 `calss_probe.db`，走**和正式库同一份**
 `Rdb.ensureUpToDate()`，18 条断言全绿：
 
@@ -58,6 +63,21 @@
 演练页第一行是设备的真实取值 —— **外键是关的**。Android 版依赖 `ON DELETE CASCADE` 清时段，
 在鸿蒙上那样做会留下孤儿 `course_schedules`。所以 `ScheduleStore` 一律**显式删**时段，
 并用「外键关着」的测试夹具证明不留孤儿（`tests/store.test.ts` 的 delete 用例）。
+
+## 周视图（阶段 2）实机验证
+
+存证 `docs/evidence/15..20-*.jpeg`：
+
+| 场景 | 结果 |
+|---|---|
+| 空课表 | 网格 7 列 × 12 节、今天那一列高亮（周四 10/22）、表头显示本周日期 |
+| 写入 4 门示例课 | 色块按周次出现；周一 3-4 节两门课**并排双道 + ⚠**（冲突） |
+| 单周课（1-15 单） | 第 1、3 周出现，第 2 周消失 |
+| 点「›」/ 滑动 | 第 2 周（无单周课）→ 第 3 周（单周课回来），表头日期随之改变 |
+| 点「回到本周」 | 回第 1 周，日期后标注「· 本周」，「回到本周」按钮消失（换回「本周」提示） |
+| 点色块 | 底部详情卡：周几/第几节/教师/教室/周次（`WeekMasks.format` 的结果） |
+
+> 示例课与清空按钮也在开发者入口里（4 门课故意让两门撞在同一格，否则"并排双道"永远没有数据能验到）。
 
 
 ## 已知的平台差异（实现时注意）

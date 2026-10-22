@@ -13,6 +13,7 @@
  * 保证这些模块都能在 Node 上直接跑测试（见 tests/）。
  */
 export * from './CellLayout.ts';
+export * from './Colors.ts';
 export * from './Conflicts.ts';
 export * from './GridFormatParser.ts';
 export * from './InputNorm.ts';
@@ -23,4 +24,6 @@ export * from './ParsingUtils.ts';
 export * from './PdfModels.ts';
 export * from './TimetableTextParser.ts';
 export * from './WeekCalculator.ts';
+export * from './WeekItems.ts';
 export * from './WeekMasks.ts';
+export * from './WeekSelection.ts';

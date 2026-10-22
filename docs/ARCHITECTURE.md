@@ -88,19 +88,31 @@ entry/src/main/ets/
 
 ## 状态管理
 
-ArkTS 没有 ViewModel/Flow 的等价物，采用：
+ArkTS 没有 ViewModel/Flow 的等价物。实际做法（比"单例持有全部状态"更简单，也更好测）：
 
-- 单例 `ScheduleStore`（`@Observed`）持有"当前课表 + 快照"
-- 页面用 `@State` 持有自己的界面状态，订阅 store 变化
-- 所有写操作走 store 的方法（单一入口，便于测试）
+- `data/ScheduleStore.ts` 是**纯数据层**：无 ArkUI 依赖、无单例、无订阅。构造时传入 `SqlRunner`，
+  方法都是 `async`，想读就 `await store.snapshot()`。
+- 页面（`pages/Index.ets`）用 `@State` 持有"快照 + 视图状态"，一次读完再渲染；
+  写完（导入、编辑）重新 `load()` 一次。**没有可观察数据流** —— 数据量是几百行，重读一次是毫秒级，
+  换来的是"状态只有一处、不需要猜谁改了谁"。
+- 所有写操作都走 store 的方法（单一入口，Node 上可测）。
+
+### UI 层四条约定（都是编译/实机踩出来的）
+
+| # | 约定 | 违反时的症状 |
+|---|------|-------------|
+| 1 | 子组件的**数据参数必须 `@Prop`**（`@Prop items: WeekItem[]`），普通成员只在创建时赋值一次 | 父组件更新了数据，子组件仍显示旧内容。周视图第一版就是这样：首帧数据库空着 → 网格拿到空数组 → 数据到了网格还空着，而标题栏已显示"本周"（那是父组件的状态） |
+| 2 | 回调参数（`onItemTap` 这类）用普通成员即可，不需要 `@Prop` | —— |
+| 3 | 界面里"算出来的数"（格子高度、行数、颜色）**必须来自 `logic/`**，不许在 `.ets` 里重写一份算式 | 两边算法漂移后，测试全绿但界面是错的 |
+| 4 | 组件内的布局尺寸用 `onAreaChange` 拿到的 vp 值算，不要写死像素 | 换机型/折叠屏比例就错 |
 
 ### 关于「打开即当前周」
 
-Android 版踩过的坑必须原样避开：**程序化翻页（`SwiperController.changeIndex`）会触发 `onChange`**，
+Android 版踩过的坑必须原样避开：**程序化翻页（`SwiperController.changeIndex` / `Swiper.index`）会触发 `onChange`**，
 不能把"程序化翻页"当成"用户选择了某一周"。两条规则：
 
 1. 程序化翻页**整段期间**不上报（不是只忽略最终页）
 2. 仅当目标周与"当前显示的周"**不同**时才上报
 
-> **尚未落地**：阶段 2 做周视图时才新增 `logic/WeekSelection.ts` 与 `tests/week-selection.test.ts`。
-> 现在这条规则只有上面这段约定、没有代码 —— 别以为已经实现了。
+✅ 已落地：`logic/WeekSelection.ts`（`shouldReport` + `ANIMATION_GUARD_MS`）与 `tests/week-selection.test.ts`
+（含 8 个**时序复演**用例：首帧、跨多页跳转、跳走后用户再滑、回到本周后再滑回同一页、学期末边界）。
