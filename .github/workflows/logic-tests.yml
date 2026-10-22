@@ -25,7 +25,8 @@ jobs:
 
       - name: 架构守卫：logic/ 不得依赖鸿蒙 API
         run: |
-          if grep -rn "@kit\.\|@ohos\." entry/src/main/ets/logic/ ; then
+          # 只匹配**真实的 import 语句**（不能匹配注释里提到的 @kit./@ohos. —— 第一版就误报了）
+          if grep -rnE "^[[:space:]]*import .*from ['\"](@kit\.|@ohos\.)" entry/src/main/ets/logic/ ; then
             echo "::error::logic/ 里出现了鸿蒙 API 引用 —— 逻辑层必须保持零平台依赖"
             exit 1
           fi
@@ -34,7 +35,7 @@ jobs:
       - name: 架构守卫：logic/ 内部 import 必须带 .ts 扩展名
         run: |
           # Node ESM 要求扩展名；ArkTS 两种都接受，所以统一带 .ts
-          if grep -rn "from '\./[A-Za-z]*'" entry/src/main/ets/logic/ ; then
+          if grep -rnE "^[[:space:]]*import .*from ['\"]\./[A-Za-z0-9_]+['\"]" entry/src/main/ets/logic/ ; then
             echo "::error::logic/ 内部的相对 import 必须带 .ts 扩展名"
             exit 1
           fi
