@@ -28,7 +28,24 @@
 | 迁移中途失败 | Room 事务回滚，进程崩溃（用户看到闪退） | 事务回滚 + 抛出带原因的错误，页面显示「数据库失败：…」而不是闪退 |
 | 理由 | —— | 课表打不开时，一句能读的错因比闪退有用；且迁移是幂等的（播种步骤带 `WHERE NOT EXISTS`），修好后再启动会重试 |
 
-## 4. 与平台相关、不算差异的部分（说明以便对照）
+## 4. 外键级联：鸿蒙上**关着**，所以一律显式删
+
+| | Android 版 | 鸿蒙版 |
+|---|---|---|
+| 删课表/删课 | 靠 `ON DELETE CASCADE` 连带清 `course_schedules` | **显式 `DELETE FROM course_schedules WHERE ...`** |
+| 依据 | Room 打开库时会 `PRAGMA foreign_keys = ON` | 设备实测 `PRAGMA foreign_keys = 0`（`docs/evidence/14-probe-fk.jpeg` 第一行）。关系型库默认就是 OFF |
+| 后果 | —— | 若照抄 Android 的写法，删课表后会留下一堆孤儿时段；新建课程一旦复用到同一个 id，就会"借尸还魂"出现在别的课表里 |
+| 断言 | —— | `tests/store.test.ts` 的删除用例**故意不开外键**（`SqliteRunner.open({ foreignKeys: false })`），证明清得干净 |
+
+## 5. 周次掩码：JS number 只有 53 位安全整数
+
+| | Android 版 | 鸿蒙版 |
+|---|---|---|
+| 存储 | SQLite INTEGER（64 位）+ Kotlin `Long`，理论上 64 周 | 同一列、同一类型，但 `getLong()` 返回 **JS number**，超过 2^53 会丢精度 |
+| 本应用实际范围 | 周数夹在 1..30 | 同左（`clampTotalWeeks`），远在安全范围内 |
+| 兜底 | —— | `maskToDb` / `assertSafeMask`：越界**直接抛错**，而不是安静存进一个错的周次（`tests/store.test.ts` 有断言） |
+
+## 6. 与平台相关、不算差异的部分（说明以便对照）
 
 | 主题 | Android | 鸿蒙 |
 |---|---|---|

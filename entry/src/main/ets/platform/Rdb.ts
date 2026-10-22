@@ -25,6 +25,12 @@ import {
   type BootstrapInput,
 } from '../data/bootstrap.ts';
 import { type LegacySemester, type MigrationStep } from '../data/migrations.ts';
+import {
+  type SqlArg,
+  type SqlRow,
+  type SqlRunner,
+  type SqlStatement,
+} from '../data/SqlRunner.ts';
 
 /** 一次打开库得到的结果摘要（页面/日志直接展示，便于截图取证） */
 export interface RdbBootstrapOutcome {
@@ -41,7 +47,7 @@ export interface RdbBootstrapOutcome {
  * 为什么不直接把 `ResultSet` 传出去：`ResultSet` 必须 `close()`，一旦漏关就是内存/句柄泄漏；
  * 而页面与 store 层只需要"按列名取值"的对象。这里在 `query()` 内部转完就关，调用方看不到句柄。
  */
-export class RdbRow {
+export class RdbRow implements SqlRow {
   private readonly names: string[];
   private readonly cells: Map<string, relationalStore.ValueType>;
 
@@ -120,7 +126,7 @@ export class RdbRow {
   }
 }
 
-export class Rdb {
+export class Rdb implements SqlRunner {
   /** 库名 → 实例。RDB 不允许同进程重复打开同名库，这里保证只开一次 */
   private static readonly opened: Map<string, Rdb> = new Map<string, Rdb>();
 
@@ -190,7 +196,7 @@ export class Rdb {
     };
     const plan: BootstrapPlan = bootstrapPlan(input);
 
-    await this.runSteps(plan.steps);
+    await this.runSteps(planToStatements(plan.steps));
 
     // 建库/迁移的事务已经提交；版本号单独写（PRAGMA），写完必须回读确认
     if (this.store.version !== plan.targetVersion) {
@@ -215,7 +221,7 @@ export class Rdb {
   /**
    * 在一个事务里依次执行步骤。任一步失败整批回滚 —— 迁移不允许"做了一半"。
    */
-  async runSteps(steps: MigrationStep[]): Promise<void> {
+  async runSteps(steps: SqlStatement[]): Promise<void> {
     if (steps.length === 0) {
       return;
     }
@@ -240,21 +246,51 @@ export class Rdb {
         const err2 = e2 as BusinessError;
         console.error('[Rdb] 回滚同样失败：' + err2.code + ' ' + err2.message);
       }
-      throw new Error('迁移事务失败，已回滚：' + err.message);
+      throw new Error('事务失败，已回滚：' + err.message);
     }
   }
 
   /** 单条写语句 */
-  async exec(sql: string, args: Array<relationalStore.ValueType> = []): Promise<void> {
-    await this.store.executeSql(sql, args);
+  async exec(sql: string, args: SqlArg[] = []): Promise<void> {
+    await this.store.executeSql(sql, toValues(args));
+  }
+
+  /**
+   * 插入一行并返回自增主键。
+   *
+   * 必须和 `SELECT last_insert_rowid()` 落在**同一个事务**里：RDB 内部有连接池，
+   * 两条独立的 executeSql/querySql 不保证同一条连接，那样取到的可能是别的插入的 id。
+   */
+  async insertAndGetId(sql: string, args: SqlArg[] = []): Promise<number> {
+    const tx: relationalStore.Transaction = await this.store.createTransaction();
+    try {
+      await tx.execute(sql, toValues(args));
+      const rs: relationalStore.ResultSet = await tx.querySql('SELECT last_insert_rowid() AS id');
+      let id = 0;
+      try {
+        if (rs.goToNextRow()) {
+          id = rs.getLong(0);
+        }
+      } finally {
+        rs.close();
+      }
+      await tx.commit();
+      return id;
+    } catch (e) {
+      const err = e as Error;
+      try {
+        await tx.rollback();
+      } catch (e2) {
+        const err2 = e2 as BusinessError;
+        console.error('[Rdb] 回滚同样失败：' + err2.code + ' ' + err2.message);
+      }
+      throw new Error('插入失败，已回滚：' + err.message);
+    }
   }
 
   /** 查询并立刻把 ResultSet 转成对象数组（句柄不外泄） */
-  async query(
-    sql: string,
-    args: Array<relationalStore.ValueType> = []
-  ): Promise<RdbRow[]> {
-    const rs: relationalStore.ResultSet = await this.store.querySql(sql, args);
+  async query(sql: string, args: SqlArg[] = []): Promise<RdbRow[]> {
+    const rs: relationalStore.ResultSet = await this.store.querySql(sql, toValues(args));
     const names: string[] = rs.getColumnNames();
     const out: RdbRow[] = [];
     try {
@@ -273,7 +309,7 @@ export class Rdb {
   }
 
   /** 取一行一列（COUNT(*) 这类）；没有结果时返回 0 */
-  async scalarInt(sql: string, args: Array<relationalStore.ValueType> = []): Promise<number> {
+  async scalarInt(sql: string, args: SqlArg[] = []): Promise<number> {
     const rows: RdbRow[] = await this.query(sql, args);
     if (rows.length === 0) {
       return 0;
@@ -333,4 +369,28 @@ export class Rdb {
       throw new Error('读取旧学期失败（' + err.code + ' ' + err.message + '），已停止迁移');
     }
   }
+}
+
+/** SqlArg → relationalStore 的绑定参数（SqlArg 是它的子集，这里显式转一次避免类型歧义） */
+function toValues(args: SqlArg[]): Array<relationalStore.ValueType> {
+  const out: Array<relationalStore.ValueType> = [];
+  for (const a of args) {
+    out.push(a);
+  }
+  return out;
+}
+
+/** 迁移/建库的步骤 → 通用的语句结构（两者字段相同，显式复制一遍免得依赖结构兼容） */
+function planToStatements(steps: MigrationStep[]): SqlStatement[] {
+  const out: SqlStatement[] = [];
+  for (const step of steps) {
+    const params: SqlArg[] = [];
+    if (step.params !== undefined) {
+      for (const p of step.params) {
+        params.push(p);
+      }
+    }
+    out.push({ sql: step.sql, params: params });
+  }
+  return out;
 }

@@ -12,7 +12,7 @@
 | `WeekGrid` 行数算式 | `logic/CellLayout.ts` | ✅ 8 断言 |
 | `ocr/TimetableTextParser.kt` | `logic/TimetableTextParser.ts` | ✅ 18 断言（真实样本 21 行） |
 | `pdf/GridFormatParser.kt` / `ListFormatParser.kt` | `logic/GridFormatParser.ts` / `logic/ListFormatParser.ts` | ✅ 24 断言（合成夹具） |
-| `data/ScheduleRepository.kt` | `data/ScheduleStore.ts` | 🔄 下一步（`platform/Rdb.ts` 已就位） |
+| `data/ScheduleRepository.kt` | `data/ScheduleStore.ts`（依赖 `data/SqlRunner.ts` 接口） | ✅ 26 断言（真 SQLite：启动选表/建表/删除清理/覆盖与合并导入/快照） |
 | `data/db/*`（Room、迁移 v1→v2） | `data/schema.ts` + `data/migrations.ts` + `data/bootstrap.ts` | ✅ 33 断言（真 SQLite：建库/迁移/级联/导入三态/启动选表/幂等/五种版本状态） |
 | `AppDatabase.get()` 懒加载单例 | `platform/Rdb.ts` | ✅ 实机验证（见下方「设备侧验证」） |
 | `ui/home/WeekGrid.kt` | `view/WeekGrid.ets` | ⬜ |
@@ -47,6 +47,17 @@
 另外用正式库 `calss.db` 验证了**真持久化**：写入 1 门测试课 → `aa force-stop`（pid 从 30378 变 31405）
 → 重启后仍显示「1 门课」且 `noop`（不重建）；再点清空 → 变回「0 门课」。
 存证：`docs/evidence/04..09-*.jpeg`。
+
+`platform/Rdb.ts` 接上 `ScheduleStore` 之后又走了一遍（`docs/evidence/10..13-*.jpeg`）：
+写入 → 「1 门课 · 1 个时段 · 首门课：持久化测试（周3 5-6 节 · 1-16）」→ 重启（pid 6664 → 6913）仍在 → 清空回 0。
+这一轮顺带验到了两个 Node 测不出的原语：`createTransaction` 里执行 INSERT、以及
+`SELECT last_insert_rowid()` 与 INSERT 同事务（`insertAndGetId`）。
+
+### 实测：`PRAGMA foreign_keys = 0`
+
+演练页第一行是设备的真实取值 —— **外键是关的**。Android 版依赖 `ON DELETE CASCADE` 清时段，
+在鸿蒙上那样做会留下孤儿 `course_schedules`。所以 `ScheduleStore` 一律**显式删**时段，
+并用「外键关着」的测试夹具证明不留孤儿（`tests/store.test.ts` 的 delete 用例）。
 
 
 ## 已知的平台差异（实现时注意）

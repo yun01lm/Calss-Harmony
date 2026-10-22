@@ -15,14 +15,36 @@
 ### 硬边界（最重要的一条约定）
 
 `entry/src/main/ets/logic/**` **禁止** import 任何 `@kit.*`、`@ohos.*`，也不允许引用 ArkUI 组件。
+`entry/src/main/ets/data/**` 同样禁止（CI 里有守卫）。
 
 原因：鸿蒙 SDK 只装在开发机上，而逻辑正确性应该**在任何有 Node 的地方**都能验证（包括 CI）。
 两侧分工：
 
 - `logic/**`：数据形状、周次位运算、日期推算、输入规范化、教室短形式、冲突判定、格子行数算法、
   课表文本解析、作息文本解析
-- `platform/**`：把系统 API 的结果转成 `logic/**` 需要的纯数据（如把 `ResultSet` 转成对象数组、
-  把 PDF 文本流转成 `TextLine[]`），以及把 `logic/**` 的产物写回系统
+- `data/**`：schema / 迁移 / 建库决策 / 业务语义（`ScheduleStore`）/ 模型
+- `platform/**`：把系统 API 的结果转成 `logic/**`、`data/**` 需要的纯数据
+  （如把 `ResultSet` 转成对象数组、把 PDF 文本流转成 `TextLine[]`），以及把产物写回系统
+
+### SqlRunner：让业务语义也能在 Node 上测
+
+`data/ScheduleStore.ts` 不直接依赖 `platform/Rdb.ts`，而是依赖 5 个方法的接口 `data/SqlRunner.ts`：
+
+```
+data/ScheduleStore.ts   业务语义（启动选表 / 覆盖与合并导入 / 删表连带清理）
+        │ 依赖
+        ▼
+data/SqlRunner.ts       只有 query / exec / runSteps / scalarInt / insertAndGetId
+        │
+   ┌────┴─────────────────────────┐
+   ▼                              ▼
+platform/Rdb.ts            tests/helpers/sqliteRunner.ts
+（relationalStore，真机）    （node:sqlite，CI）
+```
+
+好处是**同一份 store 代码**在设备上跑真库、在 CI 上跑内存库；坏处是接口必须只有 5 个方法 ——
+能力越大，两个实现越容易行为不一致，测试也就越假。加方法前先想想：能不能用现有 5 个拼出来。
+
 
 ## 逻辑层的四条编码约定（都是编译实测踩出来的，别改）
 

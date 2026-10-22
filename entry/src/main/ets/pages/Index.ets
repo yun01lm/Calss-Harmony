@@ -14,26 +14,25 @@ import { defaultSlots } from '../data/schema';
 import { pickStartupTimetable, TimetableChoice } from '../data/startupRule';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
+import { ScheduleStore } from '../data/ScheduleStore';
+import { Course, CourseSchedule, maskToDb, Snapshot } from '../data/models';
 
 /**
  * 主页占位（阶段 1）。
  *
  * 它现在同时是**三层的联调面板**：
  * 1. 逻辑层：每段文字都调用 `logic/` 里的真实模块（避免模块没被引用、坏了没人发现）；
- * 2. 数据层：`data/` 的 schema / 迁移 / 启动规则；
+ * 2. 数据层：`data/` 的 schema / 迁移 / 启动规则 / ScheduleStore；
  * 3. 平台层：真的打开 `relationalStore`、真的写库、真的关掉重开。
  *
+ * 页面上那行"数据库 …"里的每个数字都是从库里查出来的，不是常量。
  * 阶段 2 会整页替换为周视图（WeekGrid + Swiper），届时本页与 `platform/MigrationProbe.ts` 一起删除。
  */
 @Entry
 @Component
 struct Index {
-  /**
-   * 唯一基准：本学期的"第 1 周周一"。
-   * 周次、每周的周一、日期范围**全部从它推导** —— 避免多个独立基准互相矛盾
-   * （第一版出过"第 5 周的周一早于开学日"这种自相矛盾的显示）。
-   */
-  private readonly semesterStart: number = WeekCalculator.startDateForWeek(
+  /** 本学期的"第 1 周周一"，来自数据库（snapshot.timetable.startDateEpochDay）；加载前先按当周兜底 */
+  @State semesterStartEpochDay: number = WeekCalculator.startDateForWeek(
     1,
     WeekCalculator.todayEpochDay()
   );
@@ -46,6 +45,9 @@ struct Index {
 
   /** 平台层实况（真的从库里查出来的数字，不是常量） */
   @State dbLine: string = '数据库：打开中…';
+
+  /** 当前课表的快照摘要（课程名等） */
+  @State snapshotLine: string = '';
 
   @State probeLines: ProbeLine[] = [];
   @State probing: boolean = false;
@@ -62,7 +64,7 @@ struct Index {
           .fontWeight(FontWeight.Bold)
           .fontColor('#3B3430')
 
-        Text('鸿蒙版 · 数据层已接 relationalStore')
+        Text('鸿蒙版 · 数据层已接 relationalStore + ScheduleStore')
           .fontSize(14)
           .fontColor('#7A6E66')
 
@@ -110,6 +112,13 @@ struct Index {
           .fontSize(12)
           .fontColor('#2E7D32')
           .width('100%')
+
+        if (this.snapshotLine.length > 0) {
+          Text(this.snapshotLine)
+            .fontSize(11)
+            .fontColor('#7A6E66')
+            .width('100%')
+        }
 
         Button('写入 1 门测试课（验证真持久化）')
           .fontSize(13)
@@ -173,7 +182,7 @@ struct Index {
             this.weekNo = this.weekNo + 1;
           })
 
-        Text('下一步：ScheduleStore（业务语义层）→ 周视图 → 导入流程')
+        Text('下一步：周视图（WeekGrid + Swiper）→ 导入流程')
           .fontSize(12)
           .fontColor('#7A6E66')
           .margin({ top: 26, bottom: 24 })
@@ -189,7 +198,7 @@ struct Index {
 
   // ---------------------------------------------------------------- 平台层
 
-  /** 打开真实数据库并查回真实数字（含建库/迁移结果） */
+  /** 打开真实数据库 → 保证结构最新 → 用 ScheduleStore 读快照 */
   private async refreshDb(): Promise<void> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
@@ -203,46 +212,83 @@ struct Index {
         Date.now(),
         WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
       );
-      const timetables: number = await db.scalarInt('SELECT COUNT(*) FROM timetables');
-      const slots: number = await db.scalarInt('SELECT COUNT(*) FROM time_slots WHERE timetableId = 1');
-      const courses: number = await db.scalarInt('SELECT COUNT(*) FROM courses');
-      this.dbLine = `数据库 v${outcome.version} · ${outcome.kind}（打开时 v${before}，执行 ${outcome.stepCount} 步）` +
-        ` · ${timetables} 张课表 · ${slots} 节作息 · ${courses} 门课`;
+
+      const store = new ScheduleStore(db);
+      await store.ensureCurrentTimetable(Date.now());
+      const snap: Snapshot = await store.snapshot();
+      const name: string = snap.timetable === null ? '（无课表）' : snap.timetable.name;
+
+      this.dbLine = `数据库 v${outcome.version} · ${outcome.kind}（打开时 v${before}，${outcome.stepCount} 步）` +
+        ` · 《${name}》 · ${snap.slots.length} 节作息 · ${snap.courses.length} 门课` +
+        ` · ${snap.schedules.length} 个时段 · ${snap.events.length} 个安排`;
+
+      if (snap.timetable !== null) {
+        this.semesterStartEpochDay = snap.timetable.startDateEpochDay;
+        this.weekNo = WeekCalculator.currentWeek(
+          snap.timetable.startDateEpochDay,
+          WeekCalculator.todayEpochDay()
+        );
+      }
+      if (snap.courses.length === 0) {
+        this.snapshotLine = '当前课表还没有课程';
+      } else {
+        const first: Course = snap.courses[0];
+        const own: CourseSchedule[] = [];
+        for (const s of snap.schedules) {
+          if (s.courseId === first.id) {
+            own.push(s);
+          }
+        }
+        const slotText: string = own.length === 0
+          ? '无时段'
+          : `周${own[0].dayOfWeek} ${own[0].startPeriod}-${own[0].endPeriod} 节 · ${WeekMasks.format(BigInt(own[0].weekMask))}`;
+        this.snapshotLine = `首门课：${first.name}（${slotText}）`;
+      }
     } catch (e) {
       const err = e as Error;
       this.dbLine = '数据库失败：' + err.message;
     }
   }
 
-  /** 往**正式的** calss.db 里写一门课，用来验证"杀进程重启后数据还在" */
-  private async writeSampleCourse(): Promise<void> {
+  /** 打开库并拿到 store（三个按钮共用） */
+  private async openStore(): Promise<ScheduleStore> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
-      return;
+      throw new Error('拿不到 Context');
     }
+    const db: Rdb = await Rdb.open(ctx);
+    await db.ensureUpToDate(
+      Date.now(),
+      WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
+    );
+    const store = new ScheduleStore(db);
+    await store.ensureCurrentTimetable(Date.now());
+    return store;
+  }
+
+  /** 往**正式的** calss.db 里写一门课，用来验证"杀进程重启后数据还在" */
+  private async writeSampleCourse(): Promise<void> {
     try {
-      const db: Rdb = await Rdb.open(ctx);
-      await db.ensureUpToDate(
-        Date.now(),
-        WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
-      );
-      await db.exec(
-        'INSERT INTO courses (timetableId, name, teacher, location, color, category, note) ' +
-          'VALUES (1, ?, ?, ?, 0, ?, ?)',
-        ['持久化测试', '自检', '思源楼-101', '', '']
-      );
-      // 用自然键取回 id：不依赖 last_insert_rowid() 一定落在同一条连接上
-      const rows = await db.query(
-        "SELECT id FROM courses WHERE name = ? ORDER BY id DESC LIMIT 1",
-        ['持久化测试']
-      );
-      if (rows.length === 1) {
-        await db.exec(
-          'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
-            'VALUES (?, 3, 5, 6, ?)',
-          [rows[0].int('id'), 65535]
-        );
-      }
+      const store: ScheduleStore = await this.openStore();
+      const course: Course = {
+        id: 0,
+        timetableId: 0,
+        name: '持久化测试',
+        teacher: '自检',
+        location: '思源楼-101',
+        color: 0,
+        category: '',
+        note: '',
+      };
+      const slot: CourseSchedule = {
+        id: 0,
+        courseId: 0,
+        dayOfWeek: 3,
+        startPeriod: 5,
+        endPeriod: 6,
+        weekMask: maskToDb((BigInt(1) << BigInt(16)) - BigInt(1)),
+      };
+      await store.saveCourse(course, [slot]);
       await this.refreshDb();
     } catch (e) {
       const err = e as Error;
@@ -251,19 +297,20 @@ struct Index {
   }
 
   private async clearSampleCourse(): Promise<void> {
-    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
-    if (ctx === undefined) {
-      return;
-    }
     try {
-      const db: Rdb = await Rdb.open(ctx);
-      await db.exec(
-        'DELETE FROM course_schedules WHERE courseId IN ' +
-          '(SELECT id FROM courses WHERE name = ?)',
-        ['持久化测试']
-      );
-      await db.exec('DELETE FROM courses WHERE name = ?', ['持久化测试']);
+      const store: ScheduleStore = await this.openStore();
+      const snap: Snapshot = await store.snapshot();
+      let removed = 0;
+      for (const c of snap.courses) {
+        if (c.name === '持久化测试') {
+          await store.deleteCourse(c.id);
+          removed++;
+        }
+      }
       await this.refreshDb();
+      if (removed === 0) {
+        this.snapshotLine = '没有"持久化测试"这门课，无需清理';
+      }
     } catch (e) {
       const err = e as Error;
       this.dbLine = '清空失败：' + err.message;
@@ -291,8 +338,8 @@ struct Index {
 
   private weekRangeText(): string {
     // 第 N 周的周一 = 开学日 + (N-1) 周 —— 与 Android 版 WeekGrid 的算法完全一致
-    const monday = this.semesterStart + (this.weekNo - 1) * WeekCalculator.DAYS_PER_WEEK;
-    const start = WeekCalculator.isoDate(this.semesterStart);
+    const monday = this.semesterStartEpochDay + (this.weekNo - 1) * WeekCalculator.DAYS_PER_WEEK;
+    const start = WeekCalculator.isoDate(this.semesterStartEpochDay);
     return `第 ${this.weekNo} 周的周一 ${WeekCalculator.isoDate(monday)} · 开学 ${start}`;
   }
 

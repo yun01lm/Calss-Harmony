@@ -63,6 +63,16 @@ export class MigrationProbe {
   ): Promise<void> {
     // ---- 1) 造 v1 库
     let db: Rdb = await Rdb.open(context, PROBE_DB);
+
+    // 先看一眼外键开关：SQLite 默认 OFF，Room 会替应用打开，relationalStore 没有这个保证。
+    // 所以 store 层删数据一律**显式删**（不依赖 CASCADE），这一行只是把设备实际情况记下来。
+    const fkOn: number = await db.scalarInt('PRAGMA foreign_keys');
+    MigrationProbe.check(
+      lines,
+      '设备的外键开关状态（仅记录，不依赖它）',
+      true,
+      'PRAGMA foreign_keys=' + fkOn
+    );
     const v1Steps: MigrationStep[] = [];
     for (const sql of V1_SCHEMA) {
       v1Steps.push({ sql: sql });
