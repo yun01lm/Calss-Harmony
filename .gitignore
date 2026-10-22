@@ -33,3 +33,6 @@ Thumbs.db
 
 # ---- 本地临时文件（截图/日志/脚本）----
 /.tmp/
+
+# 真实课表 PDF（含姓名）——只用于本地验证，绝不入库
+entry/src/main/resources/rawfile/spike-real*.pdf

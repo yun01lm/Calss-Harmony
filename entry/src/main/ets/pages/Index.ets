@@ -1,4 +1,4 @@
-import { common } from '@kit.AbilityKit';
+﻿import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import {
@@ -72,6 +72,7 @@ struct Index {
   @State pdfLines: SpikeLine[] = [];
   @State pdfRunning: boolean = false;
   @State webReady: boolean = false;
+  @State webLog: string[] = [];
   private webController: webview.WebviewController = new webview.WebviewController();
   private pdfSink: PayloadSink | null = null;
 
@@ -437,6 +438,13 @@ struct Index {
             .width('100%')
             .alignItems(VerticalAlign.Top)
           }, (line: SpikeLine) => line.label + '|' + line.detail)
+
+          ForEach(this.webLog, (msg: string) => {
+            Text('web: ' + msg)
+              .fontSize(9)
+              .fontColor('#8A7F76')
+              .width('100%')
+          }, (msg: string, index: number) => 'log' + index + msg.substring(0, 12))
         }
         .width('100%')
       }
@@ -469,6 +477,18 @@ struct Index {
       .onPageEnd(() => {
         this.webReady = true;
       })
+      .onConsole((event) => {
+        // pdf.js 的诊断信息（例如 "Unable to load CMap at: …"）只有从这里能看到
+        const msg: string = event.message.getMessage();
+        const line: string = msg;
+        const next: string[] = this.webLog.slice(0);
+        next.push(line);
+        while (next.length > 6) {
+          next.shift();
+        }
+        this.webLog = next;
+        return false;
+      })
   }
 
   /** 用 pdf.js 抽取合成夹具 PDF 的带坐标文本，再喂给现有的两个解析器 */
@@ -486,7 +506,7 @@ struct Index {
         this.pdfRunning = false;
         return;
       }
-      const base64: string = await PdfJs.readRawBase64(ctx as common.UIAbilityContext, 'spike-timetable.pdf');
+      const base64: string = await PdfJs.readRawBase64(ctx as common.UIAbilityContext, 'spike-grid.pdf');
       const info: SpikeLine = { label: 'PDF 已读入并送去 pdf.js', ok: base64.length > 0, detail: base64.length + ' 字符(base64)' };
       this.pdfLines = [info];
       this.webController.runJavaScript(PdfJs.extractCall(base64));
@@ -932,3 +952,4 @@ struct Index {
     return out;
   }
 }
+

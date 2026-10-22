@@ -12,6 +12,7 @@
 <body>
 <div id="log">pdf.js 未开始</div>
 <script src="pdf.min.js"></script>
+<script src="cmaps-data.js"></script>
 <script>
   /*
    * 这个页面只干一件事：把 PDF 的**带坐标文本片段**抽出来，回传 ArkTS。
@@ -46,6 +47,31 @@
     return out;
   }
 
+  /*
+   * CMap 供给器：从内联的 `window.__CMAPS`（cmaps-data.js）取字节，**不发任何请求**。
+   * 为什么不用 cMapUrl：ArkWeb 里 `resource://rawfile` 上 XHR 被 CORS 拦掉
+   * （控制台原文："Cross origin requests are only supported for protocol schemes:
+   * arkweb, arkweb-extension, chrome, ..."），pdf.js 于是报
+   * "Unable to load binary CMap" 并把整页文字丢掉。
+   */
+  class InlineCMapReaderFactory {
+    constructor(params) {
+      this.baseUrl = (params && params.baseUrl) || '';
+      this.isCompressed = !!(params && params.isCompressed);
+    }
+    fetch(params) {
+      const name = params.name;
+      const b64 = window.__CMAPS ? window.__CMAPS[name] : null;
+      if (!b64) {
+        return Promise.reject(new Error('内置 CMap 里没有 ' + name));
+      }
+      return Promise.resolve({
+        cMapData: base64ToBytes(b64),
+        compressionType: this.isCompressed ? 1 : 0,
+      });
+    }
+  }
+
   function send(payload) {
     if (window.pdfBridge && typeof window.pdfBridge.report === 'function') {
       window.pdfBridge.report(payload);
@@ -56,15 +82,32 @@
 
   async function extractAll(base64) {
     const data = base64ToBytes(base64);
-    const doc = await pdfjsLib.getDocument({ data: data, isEvalSupported: false }).promise;
+    /*
+     * cMapUrl / cMapPacked 是**必须**的：真实课表 PDF 用的是
+     * `/Type0 /Encoding UniGB-UCS2-H`（Adobe-GB1 中文字体）且**没有 ToUnicode**，
+     * 这时 pdf.js 必须去加载预定义 CMap 才能把字形码翻成汉字；
+     * 不配这两个参数，它会把整页文字**整个丢掉** —— 实测真实文件得到 "2 页 / 0 个文本项"。
+     * cmaps/ 目录里只放了 GB 系列（约 136KB），没有全量 2MB。
+     */
+    const doc = await pdfjsLib.getDocument({
+      data: data,
+      cMapUrl: 'cmaps/',
+      cMapPacked: true,
+      CMapReaderFactory: InlineCMapReaderFactory,
+      isEvalSupported: false,
+    }).promise;
     const lines = ['OK'];
+    let totalItems = 0;
+    let emptyItems = 0;
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const viewport = page.getViewport({ scale: 1 });
       const content = await page.getTextContent();
       for (const item of content.items) {
+        totalItems++;
         // 只有带 str 的才是文本项（markContent 之类的标记项没有 str）
         if (typeof item.str !== 'string' || item.str.length === 0) {
+          emptyItems++;
           continue;
         }
         // 用 viewport 的变换把文本空间坐标映射到"左上原点、y 向下"的页面坐标，
@@ -83,7 +126,7 @@
     }
     const numPages = doc.numPages;
     await doc.destroy();
-    return { lines: lines, numPages: numPages };
+    return { lines: lines, numPages: numPages, totalItems: totalItems, emptyItems: emptyItems };
   }
 
   // ArkTS 调这个函数开始解析
@@ -91,6 +134,13 @@
     log('解析中…');
     extractAll(base64).then(function (r) {
       log('完成：' + r.numPages + ' 页 / ' + (r.lines.length - 1) + ' 个文本片段');
+      if (r.lines.length === 1) {
+        // 一个可读片段都没有：把"有多少文本项、其中多少是空串"报出去，
+        // 这能区分"PDF 里没有文字"和"有文字但字体没有 Unicode 映射（取不出可读字符）"
+        send('ERR\t没有可读文本：' + r.numPages + ' 页 / ' + r.totalItems +
+          ' 个文本项，其中 ' + r.emptyItems + ' 个取不出字符（多为 CID 字体缺 ToUnicode 映射）\nEND');
+        return;
+      }
       r.lines.push('END');
       send(r.lines.join('\n'));
     }).catch(function (e) {

@@ -85,6 +85,56 @@ PDF Kit 不可用之后选了这条路。结论：**运输层通了，坐标可�
 
 ---
 
+## Spike B″：真实课表 PDF（用户提供的文件）
+
+**结论：能解析，但必须先解决"中文 CMap"这件事。**
+
+真实文件特征：`/Type0 /Encoding UniGB-UCS2-H`，字体 STSong-Light（Adobe-GB1）。
+- 页面里**有 204 个 `Tj`/`TJ` 文本算子**（解压内容流数出来的），不是纯图形；
+- 但 pdf.js 一开始报 **"2 页 / 0 个文本项"** —— 一个字都取不出来；
+- 原因链（WebView 控制台原文，靠 `Web(...).onConsole` 才看到）：
+  1. 字体是 CID 键控、**没有 `/ToUnicode`** → pdf.js 必须加载预定义 CMap；
+  2. `cMapUrl: 'cmaps/'` 指向 `resource://rawfile/…` →
+     `Access to XMLHttpRequest … blocked by CORS policy: Cross origin requests are only
+     supported for protocol schemes: arkweb, arkweb-extension, chrome, …`；
+  3. CMap 加载失败 → pdf.js 把整页文字**丢掉**（只打 warning，不向业务层报错）。
+
+**解法**：把 GB 系列 CMap 以 base64 内联进 `cmaps-data.js`（182KB），用自定义
+`CMapReaderFactory` 直接从内存喂字节，**不发任何请求**。
+
+修复后的实机结果：
+
+```
+pdf.js 回传 · 2 页 / 217 个文本片段
+GridFormatParser（网格版式）· 24 门
+首门课 · 概率论与数理统计 · 周1 第 5-6 节 · 周次 1-12 · 思源楼-411
+```
+
+即 **真实课表 PDF → pdf.js → GridFormatParser → 24 门课**，整条链在模拟器上跑通。
+
+> 隐私：这份真实课表含姓名，只用于本地验证。已加入 `.gitignore`
+> （`entry/src/main/resources/rawfile/spike-real*.pdf`），验完立即删除；
+> 也**没有提交任何截图**（截图里有姓名）。仓库里只有合成的 `spike-grid.pdf`。
+
+## Spike C′：真实作息截图（用户提供的图片）
+
+模拟器没有 OCR，但**本机 Windows 自带 OCR** 支持中文（`zh-Hans-CN`），
+于是用 `tools/spike/ocr_image.ps1` 对真实截图做 OCR，再用
+`tools/spike/analyze_ocr.mjs` 把结果交给仓库里真实的 `TimetableTextParser`。
+
+**这一步抓到一个真 bug**：真实 OCR 把连字符读成了冒号/间隔号 ——
+`8: 00-8: 45` → `8 ： 00 ： 45`、`8: 50-9: 35` → `8 ： 50 · 9 ： 35`，
+而 `TIME_RANGE` 的分隔符只认 `[-~—–－〜]`，于是 **12 节一节都认不出（0/12）**。
+
+把 `:：·・` 也算成区间分隔符之后：**8/12**，剩下 4 节恰好是 OCR 本身缺字的行
+（第 1 节被读成 `8 ： 00 ： 45`，少了一个 8；10/11 节的节次号整个丢了）。
+解析器如实报出"第 1、10 节没认出来，可点「补一节」"，**不瞎补**。
+
+这份真实 OCR 结果已固化成夹具：`tests/fixtures/timetable-ocr-windows.tsv` +
+`tests/real-ocr-fixture.test.ts`（3 条断言）。
+
+---
+
 ## 附带记录
 
 - 这一轮模拟器自己崩过一次（hdc 掉线、无 Emulator 进程），已用 `Emulator.exe -license accept` + `-start "Mate 90 Pro" -noWindow` 重启；应用与数据库都还在（重启后 4 门示例课仍在，等于又验了一次持久化）。

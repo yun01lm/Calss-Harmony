@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  /* 版式刻意复刻 tests/pdf-parsers.test.ts 里 gridHeaders() 的几何：
+     星期表头中心在 100/200/…/700（pt），课程名与详情行落在某一列内。
+     CSS 里 1px = 0.75pt，所以 pt * 4/3 = px。 */
+  @page { size: A4; margin: 0; }
+  html, body { margin: 0; padding: 0; }
+  .t { position: absolute; font-family: "Microsoft YaHei", sans-serif; font-size: 10pt; white-space: pre; }
+</style>
+</head>
+<body>
+  <span class="t" style="left: 133px;  top: 80px;">2026 春季学期课表（合成夹具）</span>
+
+  <!-- 七列星期表头：左边缘 = 中心 - 15pt -->
+  <span class="t" style="left: 113px;  top: 133px;">星期一</span>
+  <span class="t" style="left: 246px;  top: 133px;">星期二</span>
+  <span class="t" style="left: 380px;  top: 133px;">星期三</span>
+  <span class="t" style="left: 513px;  top: 133px;">星期四</span>
+  <span class="t" style="left: 646px;  top: 133px;">星期五</span>
+  <span class="t" style="left: 780px;  top: 133px;">星期六</span>
+  <span class="t" style="left: 913px;  top: 133px;">星期日</span>
+
+  <!-- 星期二 3-4 节：课程名 + 详情行（真实版式就是这两行） -->
+  <span class="t" style="left: 200px;  top: 200px;">高等数学（A）★</span>
+  <span class="t" style="left: 200px;  top: 227px;">(3-4节)1-16周/思源楼-301/张老师</span>
+
+  <!-- 星期四 5-6 节 -->
+  <span class="t" style="left: 466px;  top: 200px;">大学物理★</span>
+  <span class="t" style="left: 466px;  top: 227px;">(5-6节)2-16周/知行楼-C207/李老师</span>
+</body>
+</html>
