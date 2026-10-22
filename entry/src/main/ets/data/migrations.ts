@@ -87,6 +87,10 @@ export function migrateV1toV2(legacy: LegacySemester | null, nowMillis: number):
 /**
  * 新建课表时写入的默认作息（12 节）。
  * 与 Android `SeedCallback` 一致：全新安装的第 1 张课表也带这套作息。
+ *
+ * 每条 INSERT 都带 `WHERE NOT EXISTS` 幂等守卫：同一张课表的同一节不会被播种两次。
+ * 这不是洁癖 —— `data/bootstrap.ts` 有一条"建库事务已提交、版本号没写进去"的恢复路径，
+ * 它依赖**播种步骤可以安全重跑**。
  */
 export function seedSlotRows(timetableId: number): Array<MigrationStep> {
   const slots: SlotSeed[] = defaultSlots();
@@ -95,8 +99,17 @@ export function seedSlotRows(timetableId: number): Array<MigrationStep> {
     steps.push({
       sql:
         'INSERT INTO time_slots (timetableId, periodIndex, label, startMinute, endMinute) ' +
-        'VALUES (?, ?, ?, ?, ?)',
-      params: [timetableId, s.periodIndex, s.label, s.startMinute, s.endMinute],
+        'SELECT ?, ?, ?, ?, ? ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM time_slots WHERE timetableId = ? AND periodIndex = ?)',
+      params: [
+        timetableId,
+        s.periodIndex,
+        s.label,
+        s.startMinute,
+        s.endMinute,
+        timetableId,
+        s.periodIndex,
+      ],
     });
   }
   return steps;

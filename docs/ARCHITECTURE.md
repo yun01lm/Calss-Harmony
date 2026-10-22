@@ -80,4 +80,5 @@ Android 版踩过的坑必须原样避开：**程序化翻页（`SwiperControlle
 1. 程序化翻页**整段期间**不上报（不是只忽略最终页）
 2. 仅当目标周与"当前显示的周"**不同**时才上报
 
-详见 `logic/WeekSelection.ts`（阶段 0B 落地）与 `tests/week-selection.test.mjs`。
+> **尚未落地**：阶段 2 做周视图时才新增 `logic/WeekSelection.ts` 与 `tests/week-selection.test.ts`。
+> 现在这条规则只有上面这段约定、没有代码 —— 别以为已经实现了。

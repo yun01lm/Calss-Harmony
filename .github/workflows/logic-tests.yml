@@ -40,3 +40,17 @@ jobs:
             exit 1
           fi
           echo "OK: logic/ 内部 import 均带 .ts 扩展名"
+
+      - name: 架构守卫：data/ 也不得依赖鸿蒙 API
+        run: |
+          # 数据层（schema / migrations / bootstrap / startupRule）必须能在 Node 上用 node:sqlite 直接跑，
+          # 否则迁移逻辑就只能上设备才能验证 —— 那等于没验证
+          if grep -rnE "^[[:space:]]*import .*from ['\"](@kit\.|@ohos\.)" entry/src/main/ets/data/ ; then
+            echo "::error::data/ 里出现了鸿蒙 API 引用 —— 数据层必须保持零平台依赖"
+            exit 1
+          fi
+          if grep -rnE "^[[:space:]]*import .*from ['\"]\./[A-Za-z0-9_]+['\"]" entry/src/main/ets/data/ ; then
+            echo "::error::data/ 内部的相对 import 必须带 .ts 扩展名"
+            exit 1
+          fi
+          echo "OK: data/ 零平台依赖，import 均带 .ts 扩展名"

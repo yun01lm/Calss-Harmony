@@ -81,6 +81,22 @@ export const V2_SCHEMA: string[] = [
   'CREATE INDEX IF NOT EXISTS `index_time_slots_timetableId` ON `time_slots` (`timetableId`)',
 ];
 
+/**
+ * 本应用认识的全部表名（v1 + v2 合并）。
+ *
+ * 用途：打开库时先看 `sqlite_master` 里到底有哪些表，用来判断"这个库现在处于什么状态"。
+ * 这一步是**防静默损坏**的关键 —— 见 `data/bootstrap.ts` 里对"版本号为 0 但表已存在"的处理。
+ */
+export const KNOWN_TABLES: string[] = [
+  'timetables',
+  'preferences',
+  'courses',
+  'course_schedules',
+  'custom_events',
+  'time_slots',
+  'semesters',
+];
+
 /** 偏好键（与 Android 的 PrefKeys 一致） */
 export const PREF_CURRENT_TIMETABLE = 'current_timetable_id';
 export const PREF_OPEN_PRIMARY_ON_LAUNCH = 'open_primary_on_launch';
