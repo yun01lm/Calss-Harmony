@@ -11,8 +11,8 @@
 | `HomeViewModel.markConflicts` + `WeekGrid.lanesFor` | `logic/Conflicts.ts` | ✅ 9 断言 |
 | `WeekGrid` 行数算式 | `logic/CellLayout.ts` | ✅ 8 断言 |
 | `ocr/TimetableTextParser.kt` | `logic/TimetableTextParser.ts` | ✅ 18 断言（真实样本 21 行） |
-| `pdf/GridFormatParser.kt` / `ListFormatParser.kt` | `logic/GridRows.ts` / `logic/ListRows.ts` | ⬜ |
-| `data/ScheduleRepository.kt` | `data/ScheduleStore.ts` + `platform/Rdb.ts` | ⬜ |
+| `pdf/GridFormatParser.kt` / `ListFormatParser.kt` | `logic/GridFormatParser.ts` / `logic/ListFormatParser.ts` | ✅ 24 断言（合成夹具） |
+| `data/ScheduleRepository.kt` | `data/ScheduleStore.ts` + `platform/Rdb.ts` | ⬜ 下一步 |
 | `data/db/*`（Room、迁移 v1→v2） | `data/schema.ts` + `data/migrations.ts` | ⬜ |
 | `ui/home/WeekGrid.kt` | `view/WeekGrid.ets` | ⬜ |
 | `ui/home/HomeScreen.kt` | `pages/Index.ets` | ⬜ |
