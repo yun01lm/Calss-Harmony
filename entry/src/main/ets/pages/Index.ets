@@ -9,6 +9,8 @@ import {
   WeekCalculator,
   WeekMasks,
 } from '../logic';
+import { defaultSlots } from '../data/schema';
+import { pickStartupTimetable, TimetableChoice } from '../data/startupRule';
 
 /**
  * 主页占位（阶段 0 骨架）。
@@ -78,6 +80,10 @@ struct Index {
         .fontColor('#7A6E66')
 
       Text(this.pdfText())
+        .fontSize(12)
+        .fontColor('#7A6E66')
+
+      Text(this.dataText())
         .fontSize(12)
         .fontColor('#7A6E66')
 
@@ -163,5 +169,15 @@ struct Index {
     const course = parsed.courses[0];
     const slot = course.schedules[0];
     return `PDF 解析 ${parsed.courses.length} 门 · ${course.name} 周${slot.dayOfWeek} ${slot.startPeriod}-${slot.endPeriod} 节`;
+  }
+
+  /** 数据层：默认作息条数 + 启动选表规则（真实 SQL 在 tests/sql.test.ts 里用 SQLite 验过） */
+  private dataText(): string {
+    const options: TimetableChoice[] = [
+      { id: 1, isPrimary: true, createdAt: 100 },
+      { id: 2, isPrimary: false, createdAt: 200 },
+    ];
+    const picked = pickStartupTimetable(options, 2, false);
+    return `数据层 ${defaultSlots().length} 节默认作息 · 启动打开第 ${picked} 张（上次用的那张）`;
   }
 }
