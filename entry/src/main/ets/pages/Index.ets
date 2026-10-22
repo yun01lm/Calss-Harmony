@@ -9,6 +9,7 @@ import {
 import { type CourseLike, type EventLike, type ScheduleLike, type WeekItem } from '../logic';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
+import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { ScheduleStore } from '../data/ScheduleStore';
 import { Course, CourseSchedule, maskToDb, Snapshot, TimeSlot } from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
@@ -59,6 +60,8 @@ struct Index {
   @State showDev: boolean = false;
   @State probeLines: ProbeLine[] = [];
   @State probing: boolean = false;
+  @State spikeLines: SpikeLine[] = [];
+  @State spiking: boolean = false;
 
   /** 程序化翻页中。不是 @State：它不影响渲染，只用来压住 onChange */
   private autoScrolling: boolean = false;
@@ -297,9 +300,9 @@ struct Index {
 
   @Builder
   devPanel() {
-    Column({ space: 8 }) {
+    Column({ space: 6 }) {
       Row() {
-        Text('迁移演练（开发者入口 · 标题连点 5 次开关）')
+        Text('开发者入口 · 标题连点 5 次开关')
           .fontSize(11)
           .fontColor('#5B7C99')
           .layoutWeight(1)
@@ -312,49 +315,83 @@ struct Index {
       }
       .width('100%')
 
-      Button(this.probing ? '演练进行中…' : '在 calss_probe.db 上跑 v1→v2 迁移')
-        .fontSize(12)
-        .height(32)
-        .width('100%')
-        .backgroundColor('#5B7C99')
-        .enabled(!this.probing)
-        .onClick(() => {
-          this.runProbe();
-        })
+      Scroll() {
+        Column({ space: 6 }) {
+          Button(this.probing ? '演练进行中…' : '在 calss_probe.db 上跑 v1→v2 迁移')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#5B7C99')
+            .enabled(!this.probing)
+            .onClick(() => {
+              this.runProbe();
+            })
 
-      Row({ space: 8 }) {
-        Button('写入示例课（4 门）')
-          .fontSize(11)
-          .height(28)
-          .layoutWeight(1)
-          .backgroundColor('#E07A5F')
-          .onClick(() => {
-            this.writeSamples();
-          })
-        Button('清空全部课程')
-          .fontSize(11)
-          .height(28)
-          .layoutWeight(1)
-          .backgroundColor('#BDB3AB')
-          .onClick(() => {
-            this.clearAllCourses();
-          })
-      }
-      .width('100%')
+          Row({ space: 8 }) {
+            Button('写入示例课（4 门）')
+              .fontSize(11)
+              .height(28)
+              .layoutWeight(1)
+              .backgroundColor('#E07A5F')
+              .onClick(() => {
+                this.writeSamples();
+              })
+            Button('清空全部课程')
+              .fontSize(11)
+              .height(28)
+              .layoutWeight(1)
+              .backgroundColor('#BDB3AB')
+              .onClick(() => {
+                this.clearAllCourses();
+              })
+          }
+          .width('100%')
 
-      ForEach(this.probeLines, (line: ProbeLine) => {
-        Row({ space: 4 }) {
-          Text(line.ok ? '✓' : '✗')
-            .fontSize(11)
-            .fontColor(line.ok ? '#2E7D32' : '#C62828')
-          Text(line.label + ' · ' + line.detail)
-            .fontSize(10)
-            .fontColor('#7A6E66')
-            .layoutWeight(1)
+          ForEach(this.probeLines, (line: ProbeLine) => {
+            Row({ space: 4 }) {
+              Text(line.ok ? '✓' : '✗')
+                .fontSize(11)
+                .fontColor(line.ok ? '#2E7D32' : '#C62828')
+              Text(line.label + ' · ' + line.detail)
+                .fontSize(10)
+                .fontColor('#7A6E66')
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top)
+          }, (line: ProbeLine) => line.label + '|' + line.detail)
+
+          Divider()
+
+          Button(this.spiking ? 'spike 进行中…' : '跑 spike：PDF 取文本 + 中文 OCR')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#7FA98B')
+            .enabled(!this.spiking)
+            .onClick(() => {
+              this.runSpikes();
+            })
+
+          ForEach(this.spikeLines, (line: SpikeLine) => {
+            Row({ space: 4 }) {
+              Text(line.ok ? '✓' : '✗')
+                .fontSize(11)
+                .fontColor(line.ok ? '#2E7D32' : '#C62828')
+              Text(line.label + ' · ' + line.detail)
+                .fontSize(10)
+                .fontColor('#7A6E66')
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top)
+          }, (line: SpikeLine) => line.label + '|' + line.detail)
         }
         .width('100%')
-        .alignItems(VerticalAlign.Top)
-      }, (line: ProbeLine) => line.label + '|' + line.detail)
+      }
+      .constraintSize({ maxHeight: 320 })
+      .width('100%')
+      .scrollBar(BarState.Auto)
     }
     .width('100%')
     .padding(12)
@@ -508,8 +545,25 @@ struct Index {
     this.probing = false;
   }
 
-  /** 开发者入口用：拿到当前库的 store（数据已就绪时直接复用 store 实例也行，这里统一走一次 open） */
-  private async openStoreForDev(): Promise<ScheduleStore> {
+  /** spike：PDF 取文本 / 中文 OCR（结论决定阶段 3 导入怎么写） */
+  private async runSpikes(): Promise<void> {
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      return;
+    }
+    this.spiking = true;
+    this.spikeLines = [];
+    try {
+      this.spikeLines = await SpikeProbe.runAll(ctx as common.UIAbilityContext);
+    } catch (e) {
+      const err = e as Error;
+      const line: SpikeLine = { label: 'spike 中断', ok: false, detail: err.message };
+      this.spikeLines = [line];
+    }
+    this.spiking = false;
+  }
+
+  /** 开发者入口用：拿到当前库的 store（数据已就绪时直接复用 store 实例也行，这里统一走一次 open） */  private async openStoreForDev(): Promise<ScheduleStore> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
       throw new Error('拿不到 Context');
