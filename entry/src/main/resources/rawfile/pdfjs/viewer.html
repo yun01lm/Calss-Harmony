@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pdf.js worker page</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #fff; font: 12px sans-serif; }
+    #log { padding: 6px; color: #666; }
+  </style>
+</head>
+<body>
+<div id="log">pdf.js 未开始</div>
+<script src="pdf.min.js"></script>
+<script>
+  /*
+   * 这个页面只干一件事：把 PDF 的**带坐标文本片段**抽出来，回传 ArkTS。
+   *
+   * 为什么走 ArkWeb 而不是 PDF Kit：PDF Kit 的 getTextContent() 只给纯字符串（没有坐标），
+   * 而课表解析必须知道"这串字落在星期几那一列"（见 docs/SPIKES.md）。
+   * pdf.js 的 textContent.items 带 transform 矩阵，坐标齐全。
+   *
+   * 回传格式刻意用**制表符分隔的纯文本**而不是 JSON：
+   * ArkTS 的 JSON.parse 返回 Object，逐字段取要一堆断言；纯文本 split 就够，也不会因为
+   * 某个字段是数字/字符串而踩类型。
+   *
+   *   OK\n
+   *   page\tx\ty\tendX\tfontSize\ttext\n     （x 向右、y 向下，单位都是 PDF point）
+   *   END
+   * 或
+   *   ERR\t<message>\nEND
+   */
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+
+  function log(msg) {
+    document.getElementById('log').textContent = msg;
+  }
+
+  function base64ToBytes(b64) {
+    const bin = atob(b64);
+    const len = bin.length;
+    const out = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      out[i] = bin.charCodeAt(i);
+    }
+    return out;
+  }
+
+  function send(payload) {
+    if (window.pdfBridge && typeof window.pdfBridge.report === 'function') {
+      window.pdfBridge.report(payload);
+    } else {
+      log('pdfBridge 未注册：' + payload.substring(0, 80));
+    }
+  }
+
+  async function extractAll(base64) {
+    const data = base64ToBytes(base64);
+    const doc = await pdfjsLib.getDocument({ data: data, isEvalSupported: false }).promise;
+    const lines = ['OK'];
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const viewport = page.getViewport({ scale: 1 });
+      const content = await page.getTextContent();
+      for (const item of content.items) {
+        // 只有带 str 的才是文本项（markContent 之类的标记项没有 str）
+        if (typeof item.str !== 'string' || item.str.length === 0) {
+          continue;
+        }
+        // 用 viewport 的变换把文本空间坐标映射到"左上原点、y 向下"的页面坐标，
+        // 与 logic/PdfModels.ts 的 PdfTextRun 约定一致
+        const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const x = m[4];
+        const y = m[5];
+        const fontSize = Math.hypot(m[2], m[3]);
+        const endX = x + (item.width || 0);
+        lines.push(
+          p + '\t' + x.toFixed(2) + '\t' + y.toFixed(2) + '\t' + endX.toFixed(2) + '\t' +
+          fontSize.toFixed(2) + '\t' + item.str.replace(/[\t\r\n]/g, ' ')
+        );
+      }
+      page.cleanup();
+    }
+    const numPages = doc.numPages;
+    await doc.destroy();
+    return { lines: lines, numPages: numPages };
+  }
+
+  // ArkTS 调这个函数开始解析
+  window.__runExtract = function (base64) {
+    log('解析中…');
+    extractAll(base64).then(function (r) {
+      log('完成：' + r.numPages + ' 页 / ' + (r.lines.length - 1) + ' 个文本片段');
+      r.lines.push('END');
+      send(r.lines.join('\n'));
+    }).catch(function (e) {
+      const msg = String(e && e.message ? e.message : e);
+      log('失败：' + msg);
+      send('ERR\t' + msg.replace(/[\t\r\n]/g, ' ') + '\nEND');
+    });
+  };
+
+  log('pdf.js ' + pdfjsLib.version + ' 已就绪');
+</script>
+</body>
+</html>

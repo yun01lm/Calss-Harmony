@@ -39,7 +39,32 @@
 
 ---
 
-## 对阶段 3 的影响
+## Spike B′：改走 ArkWeb + pdf.js（已验证通过）
+
+PDF Kit 不可用之后选了这条路。结论：**运输层通了，坐标可用**。
+
+实现：
+- `rawfile/pdfjs/`：pdf.js 3.11.174 legacy 构建（`pdf.min.js` 377KB + `pdf.worker.min.js` 1.13MB）
+- `rawfile/pdfjs/viewer.html`：唯一懂 pdf.js 的地方（WebView 里跑 JS）
+- `logic/PdfRunText.ts`：解析回传的制表符文本（纯逻辑，**8 条断言**）
+- `platform/PdfJs.ts`：桥接（注册 JS 代理 / rawfile → base64）
+
+实机（`docs/evidence/23-pdfjs-panel.jpeg`、`24-pdfjs-result.jpeg`）：
+
+| 项 | 结果 |
+|---|---|
+| ArkWeb 载入本地 pdf.js 页面 | ✅ `onPageEnd` 触发，按钮可用 |
+| `registerJavaScriptProxy` 回传 | ✅ `report(payload)` 收到 |
+| 合成 PDF 解析 | ✅ **1 页 / 28 个带坐标的文本片段**，样本 `1(121,60)"2026 春季学期课表…"`、`1(119,82)"星期一"` |
+| 坐标方向 | y 向下递增（与 `PdfTextRun` 约定一致） |
+| 我们的两个解析器 | ❌ 0 门 —— **符合预期**：合成夹具是 HTML 表格版式，而 `GridFormatParser` 认的是"课程名 + `(3-4节)1-16周/地点/教师`"这种真实版式 |
+
+也就是说：**平台这一侧不再有未知数**，剩下的是"解析器配不配得上真实文件"，
+而这部分本来就在 Node 上有 24 条断言（`tests/pdf-parsers.test.ts`）。
+
+代价：HAP 从 ~0.4MB 涨到 **2.17MB**（pdf.js 占大头）。
+
+下一步要做的是导入界面 + 一个**版式逼真**的合成 PDF 夹具（现在这个只够验运输层）。
 
 | 功能 | 原计划 | 现状 |
 |---|---|---|

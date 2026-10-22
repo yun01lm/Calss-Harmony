@@ -28,9 +28,25 @@ export function centerXOf(run: PdfTextRun): number {
   return (run.x + run.endX) / 2;
 }
 
+/**
+ * 一次 PDF 文本抽取的结果（`platform/PdfJs.ts` 经由 ArkWeb 里的 pdf.js 取回）。
+ *
+ * 为什么把"结果形状"放在逻辑层：抽取管道（WebView + pdf.js）换不掉，但**回传文本的解析**
+ * 是纯字符串处理，可以在 Node 上断言 —— 这样"pdf.js 给的字段顺序/vue 约定变了"能立刻被发现。
+ */
+export interface PdfExtractResult {
+  readonly ok: boolean;
+  /** ok=false 时的原因（给用户看） */
+  readonly error: string;
+  readonly runs: PdfTextRun[];
+  /** 页数（取 run.page 的最大值；没有 run 时为 0） */
+  readonly pageCount: number;
+  /** 字段不全/数字非法而被跳过的行数（>0 说明回传格式对不上，值得警惕） */
+  readonly malformed: number;
+}
+
 /** 一门课的一个上课时段 */
-export interface RawSchedule {
-  readonly dayOfWeek: number;
+export interface RawSchedule {  readonly dayOfWeek: number;
   readonly startPeriod: number;
   readonly endPeriod: number;
   /** 周次位掩码（bigint，对应 Android 的 Long） */

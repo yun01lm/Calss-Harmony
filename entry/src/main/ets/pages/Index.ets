@@ -1,15 +1,20 @@
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
+import { webview } from '@kit.ArkWeb';
 import {
+  GridFormatParser,
+  ListFormatParser,
+  PdfRunText,
   WeekCalculator,
   WeekItems,
   WeekMasks,
   WeekSelection,
 } from '../logic';
-import { type CourseLike, type EventLike, type ScheduleLike, type WeekItem } from '../logic';
+import { type CourseLike, type EventLike, type ParseResult, type ScheduleLike, type WeekItem } from '../logic';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
+import { PayloadSink, PdfBridge, PdfJs } from '../platform/PdfJs';
 import { ScheduleStore } from '../data/ScheduleStore';
 import { Course, CourseSchedule, maskToDb, Snapshot, TimeSlot } from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
@@ -63,12 +68,29 @@ struct Index {
   @State spikeLines: SpikeLine[] = [];
   @State spiking: boolean = false;
 
+  /** pdf.js 通道（ArkWeb） */
+  @State pdfLines: SpikeLine[] = [];
+  @State pdfRunning: boolean = false;
+  @State webReady: boolean = false;
+  private webController: webview.WebviewController = new webview.WebviewController();
+  private pdfSink: PayloadSink | null = null;
+
   /** 程序化翻页中。不是 @State：它不影响渲染，只用来压住 onChange */
   private autoScrolling: boolean = false;
   private controller: SwiperController = new SwiperController();
 
   aboutToAppear(): void {
+    // pdf.js 的回调经静态 sink 转进来（JS 调用时代理对象的 this 不可靠）
+    this.pdfSink = new PayloadSink((payload: string) => {
+      this.onPdfPayload(payload);
+    });
+    PdfBridge.setSink(this.pdfSink);
     this.load();
+  }
+
+  aboutToDisappear(): void {
+    PdfBridge.setSink(null);
+    this.pdfSink = null;
   }
 
   build() {
@@ -115,6 +137,9 @@ struct Index {
       if (this.detailTitle.length > 0) {
         this.detailCard()
       }
+
+      // pdf.js 容器：1x1 且透明。它只负责解析 PDF，界面不展示（见 platform/PdfJs.ts）
+      this.hiddenWeb()
     }
     .width('100%')
     .height('100%')
@@ -386,6 +411,32 @@ struct Index {
             .width('100%')
             .alignItems(VerticalAlign.Top)
           }, (line: SpikeLine) => line.label + '|' + line.detail)
+
+          Divider()
+
+          Button(this.pdfRunning ? 'pdf.js 解析中…' : (this.webReady ? '跑 PDF spike（pdf.js 取坐标）' : 'pdf.js 页面加载中…'))
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#9B8AC4')
+            .enabled(this.webReady && !this.pdfRunning)
+            .onClick(() => {
+              this.runPdfSpike();
+            })
+
+          ForEach(this.pdfLines, (line: SpikeLine) => {
+            Row({ space: 4 }) {
+              Text(line.ok ? '✓' : '✗')
+                .fontSize(11)
+                .fontColor(line.ok ? '#2E7D32' : '#C62828')
+              Text(line.label + ' · ' + line.detail)
+                .fontSize(10)
+                .fontColor('#7A6E66')
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top)
+          }, (line: SpikeLine) => line.label + '|' + line.detail)
         }
         .width('100%')
       }
@@ -397,6 +448,107 @@ struct Index {
     .padding(12)
     .backgroundColor('#F4F7FA')
     .borderRadius({ topLeft: 12, topRight: 12 })
+  }
+
+  // ---------------------------------------------------------------- pdf.js 通道
+
+  @Builder
+  hiddenWeb() {
+    Web({ src: $rawfile('pdfjs/viewer.html'), controller: this.webController })
+      .width(1)
+      .height(1)
+      .opacity(0)
+      .javaScriptAccess(true)
+      .domStorageAccess(true)
+      .fileAccess(true)
+      .onControllerAttached(() => {
+        // 注册 JS 代理必须在页面加载前后各做一次并 refresh()，否则页面里的 window.pdfBridge 是空的
+        this.webController.registerJavaScriptProxy(new PdfBridge(), 'pdfBridge', ['report']);
+        this.webController.refresh();
+      })
+      .onPageEnd(() => {
+        this.webReady = true;
+      })
+  }
+
+  /** 用 pdf.js 抽取合成夹具 PDF 的带坐标文本，再喂给现有的两个解析器 */
+  private async runPdfSpike(): Promise<void> {
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      return;
+    }
+    this.pdfRunning = true;
+    this.pdfLines = [];
+    try {
+      if (!this.webReady) {
+        const wait: SpikeLine = { label: 'pdf.js 页面未就绪', ok: false, detail: '等 onPageEnd 后再试' };
+        this.pdfLines = [wait];
+        this.pdfRunning = false;
+        return;
+      }
+      const base64: string = await PdfJs.readRawBase64(ctx as common.UIAbilityContext, 'spike-timetable.pdf');
+      const info: SpikeLine = { label: 'PDF 已读入并送去 pdf.js', ok: base64.length > 0, detail: base64.length + ' 字符(base64)' };
+      this.pdfLines = [info];
+      this.webController.runJavaScript(PdfJs.extractCall(base64));
+    } catch (e) {
+      const err = e as Error;
+      const line: SpikeLine = { label: 'pdf.js 调用失败', ok: false, detail: err.message };
+      this.pdfLines = [line];
+      this.pdfRunning = false;
+    }
+  }
+
+  /** pdf.js 回传（在 UI 线程回调） */
+  private onPdfPayload(payload: string): void {
+    const result = PdfRunText.parse(payload);
+    const lines: SpikeLine[] = [];
+    const head: SpikeLine = {
+      label: 'pdf.js 回传',
+      ok: result.ok,
+      detail: result.ok
+        ? `${result.pageCount} 页 / ${result.runs.length} 个文本片段` +
+          (result.malformed > 0 ? `（${result.malformed} 行格式不符被跳过）` : '')
+        : result.error,
+    };
+    lines.push(head);
+
+    if (result.ok && result.runs.length > 0) {
+      const parts: string[] = [];
+      const n: number = Math.min(5, result.runs.length);
+      for (let i = 0; i < n; i++) {
+        const r = result.runs[i];
+        parts.push(`${r.page}(${Math.round(r.x)},${Math.round(r.y)})"${r.text}"`);
+      }
+      const sample: SpikeLine = { label: '片段样本（页(x,y)）', ok: true, detail: parts.join(' ') };
+      lines.push(sample);
+
+      const grid: ParseResult = GridFormatParser.parse(result.runs);
+      lines.push({
+        label: 'GridFormatParser（网格版式）',
+        ok: grid.courses.length > 0,
+        detail: `${grid.courses.length} 门` + (grid.warnings.length > 0 ? ' · ' + grid.warnings.join(' / ') : ''),
+      });
+
+      const list: ParseResult = ListFormatParser.parse(result.runs);
+      lines.push({
+        label: 'ListFormatParser（列表版式）',
+        ok: list.courses.length > 0,
+        detail: `${list.courses.length} 门` + (list.warnings.length > 0 ? ' · ' + list.warnings.join(' / ') : ''),
+      });
+
+      const best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
+      if (best.courses.length > 0) {
+        const c = best.courses[0];
+        const s = c.schedules[0];
+        lines.push({
+          label: '首门课',
+          ok: true,
+          detail: `${c.name} · 周${s.dayOfWeek} 第 ${s.startPeriod}-${s.endPeriod} 节 · 周次 ${WeekMasks.format(s.weekMask)} · ${c.location}`,
+        });
+      }
+    }
+    this.pdfLines = lines;
+    this.pdfRunning = false;
   }
 
   // ---------------------------------------------------------------- 交互

@@ -22,6 +22,7 @@ export * from './Locations.ts';
 export * from './Minutes.ts';
 export * from './ParsingUtils.ts';
 export * from './PdfModels.ts';
+export * from './PdfRunText.ts';
 export * from './TimetableTextParser.ts';
 export * from './WeekCalculator.ts';
 export * from './WeekItems.ts';
