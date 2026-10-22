@@ -17,5 +17,6 @@ export * from './Conflicts.ts';
 export * from './InputNorm.ts';
 export * from './Locations.ts';
 export * from './Minutes.ts';
+export * from './TimetableTextParser.ts';
 export * from './WeekCalculator.ts';
 export * from './WeekMasks.ts';

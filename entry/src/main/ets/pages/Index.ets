@@ -3,6 +3,7 @@ import {
   Conflicts,
   GridSlot,
   Locations,
+  TimetableTextParser,
   WeekCalculator,
   WeekMasks,
 } from '../logic';
@@ -70,6 +71,10 @@ struct Index {
         .fontSize(12)
         .fontColor('#7A6E66')
 
+      Text(this.timetableText())
+        .fontSize(12)
+        .fontColor('#7A6E66')
+
       Button('测试交互：+1 周')
         .margin({ top: 14 })
         .backgroundColor('#E07A5F')
@@ -117,5 +122,13 @@ struct Index {
   private cellText(): string {
     const r = CellLayout.cellLines(64, 1.0);
     return `64vp/1.0× 格子 → 课名 ${r.nameLines} 行 + 教室 ${r.locationLines} 行`;
+  }
+
+  /** 作息表文本解析：用三行"粘贴文本"形态的样例现场跑一遍（真实样本的断言在 tests/ 里） */
+  private timetableText(): string {
+    const sample = '上午 1 8: 00-8: 45\n课间 8: 45-8: 50\n上午 2 8: 50-9: 35';
+    const parsed = TimetableTextParser.parse(TimetableTextParser.linesFromText(sample));
+    const first = parsed.periods[0];
+    return `作息解析 ${parsed.periods.length} 节 · 第 1 节 ${first.startMinute / 60} 点起`;
   }
 }
