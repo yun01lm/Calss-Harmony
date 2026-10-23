@@ -51,7 +51,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 | 项 | 结果 |
 |---|---|
 | ArkTS 编译 | ✅ `BUILD SUCCESSFUL`（33 tasks，约 8~13 s） |
-| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.16 MB，其中 pdf.js 1.51 MB） |
+| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.17 MB，其中 pdf.js 1.51 MB） |
 | 编译确实在检查类型 | ✅ 故意把 `number` 赋成 `'x'` → `ArkTS Compiler Error` |
 | 关键配置坑 | `modelVersion` 必须 **6.0.0**；SDK 版本串必须是 **"26.0.0"**（不是 `"26.0.0(26)"`） |
 

@@ -34,7 +34,7 @@
 
 | 项 | 大小 |
 |---|---|
-| HAP（release，未签名） | **2.16 MB**（2,263,311 字节） |
+| HAP（release，未签名） | **2.17 MB**（2,267,935 字节） |
 | ├─ pdf.js 3.11 legacy（`pdf.min.js` + worker） | 1.51 MB |
 | ├─ 内联中文 CMap（`cmaps-data.js`） | 182 KB |
 | └─ 应用自身（ArkTS 字节码 + 资源） | 约 0.5 MB |
