@@ -1,4 +1,4 @@
-import { common } from '@kit.AbilityKit';
+﻿import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import {
@@ -75,6 +75,8 @@ struct Index {
   @State pdfRunning: boolean = false;
   @State webReady: boolean = false;
   @State webLog: string[] = [];
+  /** 是否已经需要 pdf.js（点了导入/spike 才创建 Web 组件） */
+  @State webRequested: boolean = false;
 
   // ---------------- 导入课表（PDF）
   @State importOpen: boolean = false;
@@ -183,7 +185,11 @@ struct Index {
       }
 
       // pdf.js 容器：1x1 且透明。它只负责解析 PDF，界面不展示（见 platform/PdfJs.ts）
-      this.hiddenWeb()
+      // **只在真正要用时创建**：首帧就挂一个 Web 会把 pdf.js（1.5MB）一起加载，
+      // 冷启动白白多等（实测这台模拟器上首帧从 ~0.6s 涨到 1.2s）
+      if (this.webRequested) {
+        this.hiddenWeb()
+      }
     }
     .width('100%')
     .height('100%')
@@ -885,12 +891,12 @@ struct Index {
 
           Divider()
 
-          Button(this.pdfRunning ? 'pdf.js 解析中…' : (this.webReady ? '跑 PDF spike（pdf.js 取坐标）' : 'pdf.js 页面加载中…'))
+          Button(this.pdfRunning ? 'pdf.js 解析中…' : '跑 PDF spike（pdf.js 取坐标）')
             .fontSize(12)
             .height(32)
             .width('100%')
             .backgroundColor('#9B8AC4')
-            .enabled(this.webReady && !this.pdfRunning)
+            .enabled(!this.pdfRunning)
             .onClick(() => {
               this.runPdfSpike();
             })
@@ -970,8 +976,9 @@ struct Index {
     this.pdfRunning = true;
     this.pdfLines = [];
     try {
-      if (!this.webReady) {
-        const wait: SpikeLine = { label: 'pdf.js 页面未就绪', ok: false, detail: '等 onPageEnd 后再试' };
+      const ready: boolean = await this.ensureWeb();
+      if (!ready) {
+        const wait: SpikeLine = { label: 'pdf.js 页面没加载出来', ok: false, detail: '稍后再试一次' };
         this.pdfLines = [wait];
         this.pdfRunning = false;
         return;
@@ -986,6 +993,25 @@ struct Index {
       this.pdfLines = [line];
       this.pdfRunning = false;
     }
+  }
+
+  /** 确保 pdf.js 页面已就绪（首次导入时才创建 Web 组件并等它 onPageEnd） */
+  private async ensureWeb(): Promise<boolean> {
+    if (this.webReady) {
+      return true;
+    }
+    this.webRequested = true;
+    for (let i = 0; i < 60; i++) {
+      if (this.webReady) {
+        return true;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(() => {
+          resolve();
+        }, 100);
+      });
+    }
+    return this.webReady;
   }
 
   /** pdf.js 回传（在 UI 线程回调）。按 `pdfPurpose` 分流：spike 展示 / 导入解析 */
@@ -1079,8 +1105,9 @@ struct Index {
 
     try {
       const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
-      if (!this.webReady) {
-        throw new Error('解析器还没就绪（pdf.js 页面未加载完），请稍后再试');
+      const ready: boolean = await this.ensureWeb();
+      if (!ready) {
+        throw new Error('pdf.js 页面没加载出来，请再试一次');
       }
       this.importStage = '解析中…';
       this.pdfPurpose = 'import';
@@ -1878,6 +1905,7 @@ struct Index {
     return out;
   }
 }
+
 
 
 
