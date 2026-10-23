@@ -344,3 +344,35 @@ test('网格式：学分值折到下一行（孤立 :1.0）不会变成下一门
   assert.equal(r.courses[1].schedules[0].startPeriod, 3);
   assert.equal(r.courses[1].schedules[0].endPeriod, 4);
 });
+
+test('网格式详情：第 4 段含「班」时当作教学班', () => {
+  const f = ParsingUtils.parseGridDetail(
+    '(1-2节)1-12周/思源楼-301/孙红霞/概率论与数理统计-0066/计科2509班;计科2510班/考试/无/理论:32'
+  );
+  assert.equal(f.location, '思源楼-301');
+  assert.equal(f.teacher, '孙红霞');
+  assert.equal(f.classGroup, '计科2509班;计科2510班');
+});
+
+test('网格式详情：3 段（没有班级）时 classGroup 为空', () => {
+  const f = ParsingUtils.parseGridDetail('1-8周/第一实验楼-A204/李安琪');
+  assert.equal(f.classGroup, '');
+});
+
+test('网格式详情：课程名那段不算教学班（第 4 段是「课名-课程代码」）', () => {
+  const f = ParsingUtils.parseGridDetail('1-16周/教三-101/张老师/班主任工作实务-0101/考试');
+  assert.equal(f.classGroup, '', '「班主任工作实务」以「务」结尾，不是班级');
+  assert.equal(f.teacher, '张老师');
+});
+
+test('网格式详情：班级带括号等后缀时宁可不认（不猜）', () => {
+  const f = ParsingUtils.parseGridDetail('1-16周/教三-101/张老师/计科2509班（实验）/考试');
+  assert.equal(f.classGroup, '');
+});
+
+test('列表式详情：优先取「教学班组成」，其次「教学班」', () => {
+  const a = ParsingUtils.parseListDetail('周数:1-16地点:教三-101教师:张老师教学班组成:计科2501班');
+  assert.equal(a.classGroup, '计科2501班');
+  const b = ParsingUtils.parseListDetail('周数:1-16地点:教三-101教师:张老师教学班:软件2502班');
+  assert.equal(b.classGroup, '软件2502班');
+});

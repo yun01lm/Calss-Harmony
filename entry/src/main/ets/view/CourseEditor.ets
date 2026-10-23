@@ -193,7 +193,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(i + 1, row.start, row.end, row.weeks, row.location));
+            this.replaceRow(index, CourseDraft.row(i + 1, row.start, row.end, row.weeks, row.location, row.classGroup));
           })
         Select(this.periodOptions())
           .selected(row.start - 1)
@@ -201,7 +201,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(row.day, i + 1, row.end, row.weeks, row.location));
+            this.replaceRow(index, CourseDraft.row(row.day, i + 1, row.end, row.weeks, row.location, row.classGroup));
           })
         Text('~')
           .fontSize(12)
@@ -212,7 +212,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(row.day, row.start, i + 1, row.weeks, row.location));
+            this.replaceRow(index, CourseDraft.row(row.day, row.start, i + 1, row.weeks, row.location, row.classGroup));
           })
         Blank()
         if (this.rows.length > 1) {
@@ -236,7 +236,7 @@ export struct CourseEditor {
         .borderWidth(this.error.length > 0 && row.weeks.trim().length === 0 ? 1 : 0)
         .borderColor('#C62828')
         .onChange((v: string) => {
-          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, v, row.location));
+          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, v, row.location, row.classGroup));
         })
 
       // v3：教室跟着这一段时间走。留空就用上面"地点"那一格（同一门课两次换楼很常见）
@@ -246,8 +246,17 @@ export struct CourseEditor {
         .width('100%')
         .backgroundColor('#F6EFE8')
         .onChange((v: string) => {
-          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, row.weeks, v));
+          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, row.weeks, v, row.classGroup));
         })
+
+      // v4：教学班只显示、不可编辑 —— 它是"同一个名字是不是同一门课"的判据，
+      // 改了会让下次导入把课拆开/并错，比不改更糟
+      if (row.classGroup.length > 0) {
+        Text('教学班：' + row.classGroup)
+          .fontSize(10)
+          .fontColor('#A89C93')
+          .width('100%')
+      }
     }
     .width('100%')
     .padding({ top: 6, bottom: 6 })
@@ -288,7 +297,7 @@ export struct CourseEditor {
       ? CourseDraft.newRow(1, 1, this.periodCount)
       : this.rows[this.rows.length - 1];
     const next: DraftRow[] = this.rows.slice();
-    next.push(CourseDraft.row(base.day, base.start, base.end, base.weeks, base.location));
+    next.push(CourseDraft.row(base.day, base.start, base.end, base.weeks, base.location, base.classGroup));
     this.rows = next;
   }
 

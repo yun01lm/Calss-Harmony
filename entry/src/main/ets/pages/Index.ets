@@ -1504,6 +1504,7 @@ struct Index {
           weekMask: maskToDb(rs.weekMask),
           // 解析器给的是"这一次的教室"；课程那条也留着（旧界面/兜底显示用）
           location: rc.location,
+          classGroup: rs.classGroup,
         };
         schedules.push(s);
       }
@@ -1930,7 +1931,8 @@ struct Index {
           s.startPeriod,
           s.endPeriod,
           WeekMasks.format(maskFromDb(s.weekMask)),
-          s.location
+          s.location,
+          s.classGroup
         )
       );
     }
@@ -1980,6 +1982,7 @@ struct Index {
           endPeriod: s.endPeriod,
           weekMask: maskToDb(s.weekMask),
           location: s.location,
+          classGroup: s.classGroup,
         });
       }
       await store.saveCourse(course, schedules);
@@ -2395,8 +2398,9 @@ struct Index {
       startPeriod: startPeriod,
       endPeriod: endPeriod,
       weekMask: weekMask,
-      // 示例课（开发者入口）只用课程地点，时段上的教室留空
+      // 示例课（开发者入口）只用课程地点/班级，时段上的这两个字段留空
       location: '',
+      classGroup: '',
     };
     return schedule;
   }

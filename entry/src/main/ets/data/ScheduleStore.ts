@@ -168,7 +168,7 @@ export class ScheduleStore {
 
   async readSchedulesOf(timetableId: number): Promise<CourseSchedule[]> {
     const rows: SqlRow[] = await this.db.query(
-      'SELECT id, courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location FROM course_schedules ' +
+      'SELECT id, courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location, classGroup FROM course_schedules ' +
         'WHERE courseId IN (SELECT id FROM courses WHERE timetableId = ?) ORDER BY courseId, dayOfWeek, startPeriod',
       [timetableId]
     );
@@ -434,20 +434,27 @@ export class ScheduleStore {
    */
   async mergeCourses(items: CourseWithSchedules[]): Promise<MergeResult> {
     const timetableId: number = await this.requireCurrent();
-    // 先按「名称+教师+地点」归并：解析器是"一格一条"输出，一门课上两次就是两条，
+    // 先按「名称+教师+教学班」归并：解析器是"一格一条"输出，一门课上两次就是两条，
     // 不归并的话本次批次自己就会插出两条同名课（键索引只在开头建一次，第二条查不到）
     const coalesced: CourseWithSchedules[] = mergeCourseItems(items).items;
     const existing: Course[] = await this.readCoursesOf(timetableId);
+    const existingSchedules: CourseSchedule[] = await this.readSchedulesOf(timetableId);
     const byKey: Map<string, Course> = new Map<string, Course>();
     for (const c of existing) {
-      byKey.set(courseKeyOf(c), c);
+      const own: CourseSchedule[] = [];
+      for (const s of existingSchedules) {
+        if (s.courseId === c.id) {
+          own.push(s);
+        }
+      }
+      byKey.set(courseKeyOf(c, own), c);
     }
 
     let added = 0;
     let updated = 0;
     const steps: SqlStatement[] = [];
     for (const item of coalesced) {
-      const key: string = courseKeyOf(item.course);
+      const key: string = courseKeyOf(item.course, item.schedules);
       const old: Course | undefined = byKey.get(key);
       if (old === undefined) {
         appendInsertCourse(steps, timetableId, item);
@@ -459,9 +466,9 @@ export class ScheduleStore {
           assertSafeMask(s.weekMask);
           steps.push({
             sql:
-              'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
-              'VALUES (?, ?, ?, ?, ?, ?)',
-            params: [old.id, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
+              'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location, classGroup) ' +
+              'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            params: [old.id, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location, s.classGroup],
           });
         }
         if (item.course.category.length > 0 && item.course.category !== old.category) {
@@ -699,6 +706,7 @@ function toSchedule(row: SqlRow): CourseSchedule {
     endPeriod: row.int('endPeriod'),
     weekMask: row.int('weekMask'),
     location: row.text('location'),
+    classGroup: row.text('classGroup'),
   };
   return s;
 }
@@ -750,9 +758,9 @@ function appendInsertCourse(steps: SqlStatement[], timetableId: number, item: Co
     assertSafeMask(s.weekMask);
     steps.push({
       sql:
-        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
-        'SELECT (SELECT MAX(id) FROM courses WHERE timetableId = ?), ?, ?, ?, ?, ?',
-      params: [timetableId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
+        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location, classGroup) ' +
+        'SELECT (SELECT MAX(id) FROM courses WHERE timetableId = ?), ?, ?, ?, ?, ?, ?',
+      params: [timetableId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location, s.classGroup],
     });
   }
 }
@@ -766,9 +774,9 @@ function appendScheduleInserts(
   for (const s of schedules) {
     steps.push({
       sql:
-        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
-        'VALUES (?, ?, ?, ?, ?, ?)',
-      params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
+        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location, classGroup) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location, s.classGroup],
     });
   }
 }

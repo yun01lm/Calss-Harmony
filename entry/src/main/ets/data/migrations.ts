@@ -166,3 +166,15 @@ export function seedSlotRows(timetableId: number): Array<MigrationStep> {
   }
   return steps;
 }
+
+/**
+ * v3 → v4：给 `course_schedules` 加 `classGroup`（这一段属于哪个教学班）。
+ *
+ * 不需要回填：v3 之前的库根本没有班级信息，留空就是"不知道"——
+ * 空字符串在合并键里等价于"没有班级"，同一门课的多时段仍然会合并（与 v3 行为一致）。
+ */
+export function migrateV3toV4(existingColumns: string[] = []): MigrationStep[] {
+  const steps: MigrationStep[] = [];
+  appendAddColumn(steps, existingColumns, 'course_schedules', 'classGroup', "TEXT NOT NULL DEFAULT ''");
+  return steps;
+}

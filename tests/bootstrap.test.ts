@@ -153,13 +153,13 @@ test('fresh：空库 → 建 6 张表 + 播种第 1 张课表', () => {
   assert.ok(plan.steps.length > 0);
 
   runSteps(db, plan.steps);
-  db.exec('PRAGMA user_version = 3'); // 平台层在事务提交后写版本号，这里等价模拟
+  db.exec('PRAGMA user_version = 4'); // 平台层在事务提交后写版本号，这里等价模拟
 
   assert.deepEqual(
     tablesOf(db),
     ['course_schedules', 'courses', 'custom_events', 'preferences', 'time_slots', 'timetables']
   );
-  assert.equal(userVersion(db), 3);
+  assert.equal(userVersion(db), 4);
 
   const tt = db
     .prepare('SELECT id, name, startDateEpochDay, totalWeeks, isPrimary, createdAt FROM timetables')
@@ -216,13 +216,13 @@ test('fresh：同一份步骤跑两遍不会重复播种（幂等守卫的意义
 
 // ---------------------------------------------------------------- upgrade
 
-test('upgrade：v1 → v3 旧数据全归第 1 张课表（v1→v2→v3 一步跑完）', () => {
+test('upgrade：v1 → v4 旧数据全归第 1 张课表（v1→v2→v3→v4 一步跑完）', () => {
   const db = makeV1Db(true);
   const legacy = { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 };
   const plan = planFor(db, 1, legacy);
   assert.equal(plan.kind, BOOTSTRAP_UPGRADE);
   assert.equal(plan.fromVersion, 1);
-  assert.equal(plan.targetVersion, 3);
+  assert.equal(plan.targetVersion, DB_VERSION);
 
   // 顺序约束：读旧学期之后才 DROP，加列之后才回填
   const idx = (needle: string): number => plan.steps.findIndex((s) => s.sql.indexOf(needle) >= 0);
@@ -231,10 +231,10 @@ test('upgrade：v1 → v3 旧数据全归第 1 张课表（v1→v2→v3 一步�
   assert.ok(idx('UPDATE courses SET timetableId = 1') < idx('DROP TABLE IF EXISTS semesters'));
 
   runSteps(db, plan.steps);
-  db.exec('PRAGMA user_version = 3');
+  db.exec('PRAGMA user_version = 4');
 
   assert.equal(count(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semesters'"), 0);
-  assert.equal(userVersion(db), 3);
+  assert.equal(userVersion(db), 4);
 
   const tt = db.prepare('SELECT * FROM timetables').all() as Array<Record<string, string | number>>;
   assert.equal(tt.length, 1);
@@ -331,7 +331,7 @@ test('repair：版本号是 1 但表已经是 v2 形状 → 只补 v3 那一列�
   const plan = planFor(db, 1, { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 });
   // v2 形状但还没有 location 列：只需要跑 v2→v3，不能重跑 v1→v2（会撞 UNIQUE）
   assert.equal(plan.kind, BOOTSTRAP_UPGRADE);
-  assert.equal(plan.steps.length, 2, '一条 ALTER + 一条回填');
+  assert.equal(plan.steps.length, 3, 'v2→v3 两条（ALTER+回填）+ v3→v4 一条（ALTER）');
   assert.ok(plan.steps[0].sql.indexOf('ALTER TABLE course_schedules ADD COLUMN location') >= 0);
   assert.equal(
     plan.steps.filter((s) => s.sql.indexOf('INSERT INTO timetables') >= 0).length,

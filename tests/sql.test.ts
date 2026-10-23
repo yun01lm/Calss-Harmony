@@ -17,11 +17,13 @@ import {
   V1_SCHEMA,
   V2_SCHEMA,
   V3_SCHEMA,
+  V4_SCHEMA,
   defaultSlots,
 } from '../entry/src/main/ets/data/schema.ts';
 import {
   migrateV1toV2,
   migrateV2toV3,
+  migrateV3toV4,
   seedSlotRows,
   type MigrationStep,
 } from '../entry/src/main/ets/data/migrations.ts';
@@ -113,7 +115,7 @@ function insertLegacyCourse(
 
 /** 全新安装：建库 + 默认课表 + 默认作息 + 当前课表偏好 */
 function freshInstall(db: DatabaseSync, nowMillis: number, startDateEpochDay: number): void {
-  execAll(db, V3_SCHEMA);
+  execAll(db, V4_SCHEMA);
   db.prepare(
     'INSERT INTO timetables (name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
       "VALUES ('我的课表', ?, 20, 1, ?)"
@@ -159,7 +161,7 @@ function indexNames(db: DatabaseSync, table: string): string[] {
 }
 
 // ---------------------------------------------------------------- A. 全新安装
-test('A1 全新安装：6 张表齐全，版本号 3', () => {
+test('A1 全新安装：6 张表齐全，版本号 4', () => {
   const db = openDb();
   freshInstall(db, 1000, 20000);
   const tables = (db
@@ -173,7 +175,7 @@ test('A1 全新安装：6 张表齐全，版本号 3', () => {
     'time_slots',
     'timetables',
   ]);
-  assert.equal(DB_VERSION, 3);
+  assert.equal(DB_VERSION, 4);
   db.close();
 });
 
@@ -316,6 +318,7 @@ test('B3 迁移后 schema 与全新安装**逐列一致**（类型/非空/默认
   runSteps(migrated, migrateV1toV2({ name: '2026 秋', startDateEpochDay: 19999, totalWeeks: 18 }, 5000));
   // v2→v3 也要跑：否则'迁移后的库'比'全新安装'少一列，这个用例就失去意义了
   runSteps(migrated, migrateV2toV3());
+  runSteps(migrated, migrateV3toV4());
 
   const fresh = openDb();
   freshInstall(fresh, 1000, 20000);
@@ -572,11 +575,42 @@ test('B7 迁移 v2→v3：与全新安装的 schema 仍然逐列一致', () => {
   execAll(db, V2_SCHEMA);
   db.exec('PRAGMA user_version = 2');
   runSteps(db, migrateV2toV3(columnsOf(db)));
+  runSteps(db, migrateV3toV4(columnsOf(db)));
 
   const fresh = openDb();
   freshInstall(fresh, 1000, 20000);
   assert.deepEqual(tableInfo(db, 'course_schedules'), tableInfo(fresh, 'course_schedules'));
   assert.deepEqual(indexNames(db, 'course_schedules'), indexNames(fresh, 'course_schedules'));
   db.close();
+  fresh.close();
+});
+
+test('B8 迁移 v3→v4：加 classGroup 列，可重跑，与全新安装一致', () => {
+  const db = openDb();
+  execAll(db, V4_SCHEMA);
+  // 模拟 v3 库：把 classGroup 列去掉（用 v2 schema 建再补 location）
+  const v3 = openDb();
+  execAll(v3, V2_SCHEMA);
+  runSteps(v3, migrateV2toV3(columnsOf(v3)));
+  v3.exec('PRAGMA user_version = 3');
+
+  const before = tableInfo(v3, 'course_schedules').length;
+  runSteps(v3, migrateV3toV4(columnsOf(v3)));
+  const after = tableInfo(v3, 'course_schedules').length;
+  assert.equal(after, before + 1, '只加一列');
+  assert.equal(
+    tableInfo(v3, 'course_schedules').some((c) => c.indexOf('classGroup|TEXT|1|\'\'|0') >= 0),
+    true
+  );
+
+  const fresh = openDb();
+  freshInstall(fresh, 1000, 20000);
+  assert.deepEqual(tableInfo(v3, 'course_schedules'), tableInfo(fresh, 'course_schedules'));
+
+  // 重跑安全（列已在就不再加）
+  runSteps(v3, migrateV3toV4(columnsOf(v3)));
+  assert.equal(tableInfo(v3, 'course_schedules').length, after);
+  db.close();
+  v3.close();
   fresh.close();
 });

@@ -286,6 +286,7 @@ export class ListFormatParser {
               startPeriod: period !== null ? period.start : 1,
               endPeriod: period !== null ? period.end : 1,
               weekMask: fields.weekMask,
+              classGroup: fields.classGroup,
             },
           ],
         };

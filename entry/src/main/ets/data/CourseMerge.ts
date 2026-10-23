@@ -36,16 +36,32 @@ interface Group {
 }
 
 /**
- * 课程的唯一键：名称 + 教师。
+ * 课程的唯一键：名称 + 教师 + 教学班。
  *
- * **v3 起不再带教室**：教室跟着每条时段走（`CourseSchedule.location`），
- * 同一门课在不同楼上完全正常。带上教室的话，"数字电子技术基础"（周一 301、周五 107）
- * 会被拆成两门课 —— 改一门只改一半，合并导入也永远更新不到另一条。
+ * **地点不参与**（v3）：教室跟着每条时段走，同一门课在不同楼上完全正常。
+ * **教学班参与**（v4）：同一位老师带两个班、课名相同时，那是两门不同的课 ——
+ * 不带班级就会并成一门，删一门课会把另一门一起删掉。
  *
- * 与 `ScheduleStore` 里判断"是不是同一门课"必须用同一个键，所以那边直接调这里。
+ * 一门课的多个时段，班级一般相同；万一来料不一致，就按"班级集合"归并（排序后拼起来），
+ * 保证同一个集合总是同一个键。
+ *
+ * 与 `ScheduleStore` 判断"是不是同一门课"必须用同一个键，所以那边直接调这里。
  */
-export function courseKeyOf(course: Course): string {
-  return course.name.trim() + '\u0001' + course.teacher.trim();
+export function courseKeyOf(course: Course, schedules: CourseSchedule[]): string {
+  return course.name.trim() + '\u0001' + course.teacher.trim() + '\u0001' + classGroupKeyOf(schedules);
+}
+
+/** 一组时段的"班级集合"键：去重、排序、用 `|` 拼（`''` 表示一个班都没写） */
+export function classGroupKeyOf(schedules: CourseSchedule[]): string {
+  const groups: string[] = [];
+  for (const s of schedules) {
+    const g: string = s.classGroup.trim();
+    if (g.length > 0 && groups.indexOf(g) < 0) {
+      groups.push(g);
+    }
+  }
+  groups.sort();
+  return groups.join('|');
 }
 
 /** 一条时段能否真的在网格上出现（掩码 0 = 每周都不上 = 永远不出现） */
@@ -69,7 +85,7 @@ export function mergeCourseItems(items: CourseWithSchedules[]): MergeOutcome {
   let duplicateSchedules = 0;
 
   for (const item of items) {
-    const key: string = courseKeyOf(item.course);
+    const key: string = courseKeyOf(item.course, item.schedules);
     let group: Group | undefined = groups.get(key);
     if (group === undefined) {
       const g: Group = {

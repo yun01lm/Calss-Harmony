@@ -155,6 +155,7 @@ export class GridFormatParser {
                 startPeriod: Math.max(1, startPeriod),
                 endPeriod: Math.max(1, endPeriod),
                 weekMask: fields.weekMask,
+                classGroup: fields.classGroup,
               },
             ],
           };

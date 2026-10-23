@@ -46,11 +46,14 @@ export interface PdfExtractResult {
 }
 
 /** 一门课的一个上课时段 */
-export interface RawSchedule {  readonly dayOfWeek: number;
+export interface RawSchedule {
+  readonly dayOfWeek: number;
   readonly startPeriod: number;
   readonly endPeriod: number;
   /** 周次位掩码（bigint，对应 Android 的 Long） */
   readonly weekMask: bigint;
+  /** 这一段的教学班（如 计科2509班;计科2510班）；没写就是 '' */
+  readonly classGroup: string;
 }
 
 /** 解析出来的一门课（尚未入库） */

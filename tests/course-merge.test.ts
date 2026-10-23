@@ -21,7 +21,8 @@ function item(
   name: string,
   sessions: Array<[number, number, number, number]>,
   teacher = '张老师',
-  location = '教三-201'
+  location = '教三-201',
+  classGroup = ''
 ): CourseWithSchedules {
   const schedules = sessions.map(([day, start, end, mask]) => ({
     id: 0,
@@ -30,8 +31,9 @@ function item(
     startPeriod: start,
     endPeriod: end,
     weekMask: mask,
-    // 与 Index.toImportItems 一致：每条时段也带上这一格的教室
+    // 与 Index.toImportItems 一致：每条时段也带上这一格的教室/教学班
     location: location,
+    classGroup: classGroup,
   }));
   return { course: course(name, teacher, location), schedules: schedules };
 }
@@ -121,8 +123,8 @@ test('顺序按首次出现（预览顺序与 PDF 阅读顺序一致，便于核
 });
 
 test('课程键只做"去首尾空格"，不忽略中间差异', () => {
-  assert.equal(courseKeyOf(course(' 软件工程 ', ' 张老师 ', ' 教三-201 ')), courseKeyOf(course('软件工程')));
-  assert.notEqual(courseKeyOf(course('软件 工程')), courseKeyOf(course('软件工程')));
+  assert.equal(courseKeyOf(course(' 软件工程 ', ' 张老师 ', ' 教三-201 '), []), courseKeyOf(course('软件工程'), []));
+  assert.notEqual(courseKeyOf(course('软件 工程'), []), courseKeyOf(course('软件工程'), []));
 });
 
 test('空输入不炸', () => {
@@ -130,4 +132,29 @@ test('空输入不炸', () => {
   assert.deepEqual(out.items, []);
   assert.deepEqual(out.dropped, []);
   assert.equal(out.duplicateSchedules, 0);
+});
+
+test('同名同教师、教学班不同 → 不合并（v4：这是两门课，删一门不能连带另一门）', () => {
+  const out = mergeCourseItems([
+    item('高等数学（A）', [[1, 1, 2, WEEKS_1_TO_16]], '张老师', '教三-101', '计科2501班'),
+    item('高等数学（A）', [[2, 3, 4, WEEKS_1_TO_16]], '张老师', '教三-201', '软件2502班'),
+  ]);
+  assert.equal(out.items.length, 2, '班级不同就是两门课');
+});
+
+test('同名同教师、教学班相同、教室不同 → 仍然合并（一门课多时段）', () => {
+  const out = mergeCourseItems([
+    item('大学物理Ⅱ（B）', [[2, 5, 6, WEEKS_1_TO_16]], '王晓玉', '思源楼-204', '计科2509班'),
+    item('大学物理Ⅱ（B）', [[5, 5, 6, WEEKS_1_TO_16]], '王晓玉', '思源楼-207', '计科2509班'),
+  ]);
+  assert.equal(out.items.length, 1);
+  assert.equal(out.items[0].schedules.length, 2);
+});
+
+test('教学班写没写不影响同组判定（都为空就按"没有班级"算）', () => {
+  const out = mergeCourseItems([
+    item('体育Ⅲ-网球', [[5, 7, 8, WEEKS_1_TO_16]], '沈建昆', '操场', ''),
+    item('体育Ⅲ-网球', [[6, 7, 8, WEEKS_1_TO_16]], '沈建昆', '操场', ''),
+  ]);
+  assert.equal(out.items.length, 1);
 });

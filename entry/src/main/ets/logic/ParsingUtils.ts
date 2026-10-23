@@ -19,6 +19,8 @@ export interface GridFields {
   readonly weekMask: bigint;
   readonly location: string;
   readonly teacher: string;
+  /** 教学班（详情里含「班」的那一段）；没写就是 '' */
+  readonly classGroup: string;
 }
 
 /** 列表式详情里的字段 */
@@ -26,6 +28,8 @@ export interface ListFields {
   readonly weekMask: bigint;
   readonly location: string;
   readonly teacher: string;
+  /** 教学班（列表式里的「教学班组成/教学班」）；没写就是 '' */
+  readonly classGroup: string;
 }
 
 /** 课程类别符号：学校课表用它们标注理论/实验/上机/实践 */
@@ -136,7 +140,7 @@ export class ParsingUtils {
       }
     }
     if (parts.length === 0) {
-      const empty: GridFields = { weekMask: 0n, location: '', teacher: '' };
+      const empty: GridFields = { weekMask: 0n, location: '', teacher: '', classGroup: '' };
       return empty;
     }
 
@@ -148,8 +152,47 @@ export class ParsingUtils {
       weekMask,
       location: rest.length > 0 ? rest[0] : '',
       teacher: rest.length > 1 ? rest[1] : '',
+      classGroup: ParsingUtils.classGroupIn(rest, 2),
     };
     return fields;
+  }
+
+  /**
+   * 从详情各段里找出"教学班"那一段。
+   *
+   * **不能用固定段号**：实测有两种版式
+   * - `1-8周/第一实验楼-A204/李安琪`（3 段，没有班级）
+   * - `1-16周/思源楼-230/史梦蝶/概率论与数理统计-0066/计科2510班;计科2511班/未安排/…`
+   *   —— 第 4 段是「课程名-课程代码」，**第 5 段才是班级**
+   *
+   * 判定用"形状"而不是位置：切成 `;；、,` 之后**每一段都以「班」结尾**，才认。
+   * 这样 `班主任实务`、`计科2509班（实验）` 这类都不会被误认 —— 宁可认不出（退回
+   * "按名称+教师"合并），也不要把课名/备注当成班级。
+   */
+  private static classGroupIn(parts: string[], from: number): string {
+    for (let i = from; i < parts.length; i++) {
+      const candidate: string = parts[i];
+      if (candidate.indexOf('班') < 0) {
+        continue;
+      }
+      let ok = true;
+      let count = 0;
+      for (const token of candidate.split(/[;；、,，]/)) {
+        const t = token.trim();
+        if (t.length === 0) {
+          continue;
+        }
+        count++;
+        if (!t.endsWith('班')) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok && count > 0) {
+        return candidate;
+      }
+    }
+    return '';
   }
 
   /**
@@ -172,7 +215,7 @@ export class ParsingUtils {
       m = re.exec(text);
     }
     if (labels.length === 0) {
-      const empty: ListFields = { weekMask: 0n, location: '', teacher: '' };
+      const empty: ListFields = { weekMask: 0n, location: '', teacher: '', classGroup: '' };
       return empty;
     }
 
@@ -199,6 +242,8 @@ export class ParsingUtils {
       weekMask: WeekMasks.parse(valueOf('周数')),
       location: valueOf('地点'),
       teacher: valueOf('教师'),
+      // 「教学班组成」比「教学班」更具体，优先取它
+      classGroup: valueOf('教学班组成').length > 0 ? valueOf('教学班组成') : valueOf('教学班'),
     };
     return fields;
   }

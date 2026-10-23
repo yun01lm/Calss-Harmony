@@ -15,8 +15,8 @@
  */
 export const DB_NAME = 'calss.db';
 
-/** 当前 schema 版本（v2 = 多课表；v3 = 每次上课各有自己的教室） */
-export const DB_VERSION = 3;
+/** 当前 schema 版本（v2 = 多课表；v3 = 每次上课各自的教室；v4 = 每次上课各自的教学班） */
+export const DB_VERSION = 4;
 
 /** v1 里那三张业务表**没有** timetableId（迁移要补） */
 export const V1_SCHEMA: string[] = [
@@ -105,6 +105,22 @@ const COURSE_SCHEDULES_V3 =
   'FOREIGN KEY(`courseId`) REFERENCES `courses`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)';
 
 /**
+ * v4：在 v3 基础上再加 `classGroup`（这一段属于哪个教学班）。
+ *
+ * 为什么连教学班也要跟着时段走：v3 之后合并键是「名称+教师」，于是"同一老师带两个班、
+ * 课名相同"的两门**不同**的课会被并成一门 —— 删一门课会把另一门一起删掉。
+ * 带上教学班就分得开（同一门课多时段的教学班相同，仍然会合并）。
+ */
+const COURSE_SCHEDULES_V4 =
+  'CREATE TABLE IF NOT EXISTS `course_schedules` (' +
+  '`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `courseId` INTEGER NOT NULL, ' +
+  '`dayOfWeek` INTEGER NOT NULL, `startPeriod` INTEGER NOT NULL, ' +
+  '`endPeriod` INTEGER NOT NULL, `weekMask` INTEGER NOT NULL, ' +
+  '`location` TEXT NOT NULL DEFAULT \'\', ' +
+  '`classGroup` TEXT NOT NULL DEFAULT \'\', ' +
+  'FOREIGN KEY(`courseId`) REFERENCES `courses`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)';
+
+/**
  * v3 的全新安装 schema = v2 把 `course_schedules` 换成带 `location` 的那条。
  *
  * 用"替换那一条"而不是整份复制：两份 SQL 一字不差地抄两遍，
@@ -112,6 +128,11 @@ const COURSE_SCHEDULES_V3 =
  */
 export const V3_SCHEMA: string[] = V2_SCHEMA.map((sql: string): string => {
   return sql === COURSE_SCHEDULES_V2 ? COURSE_SCHEDULES_V3 : sql;
+});
+
+/** v4 的全新安装 schema = v2 把 `course_schedules` 换成带 location + classGroup 的那条 */
+export const V4_SCHEMA: string[] = V2_SCHEMA.map((sql: string): string => {
+  return sql === COURSE_SCHEDULES_V2 ? COURSE_SCHEDULES_V4 : sql;
 });
 
 /**

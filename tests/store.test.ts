@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, V3_SCHEMA } from '../entry/src/main/ets/data/schema.ts';
+import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, V4_SCHEMA } from '../entry/src/main/ets/data/schema.ts';
 import { ScheduleStore } from '../entry/src/main/ets/data/ScheduleStore.ts';
 import {
   assertSafeMask,
@@ -32,7 +32,7 @@ interface Fixture {
 
 function makeStore(options: SqliteRunnerOptions = {}): Fixture {
   const runner = SqliteRunner.open(options);
-  for (const sql of V3_SCHEMA) {
+  for (const sql of V4_SCHEMA) {
     runner.db.exec(sql);
   }
   return { store: new ScheduleStore(runner), runner };
@@ -67,6 +67,7 @@ function sched(
     endPeriod: endPeriod,
     weekMask: maskToDb(weeks),
     location: location,
+    classGroup: '',
   };
 }
 
@@ -343,6 +344,8 @@ test('saveCourse 更新：掩码不合法时**旧时段不能丢**（校验在�
     startPeriod: 5,
     endPeriod: 6,
     weekMask: -1,
+    location: '',
+    classGroup: '',
   };
   await assert.rejects(
     store.saveCourse({ ...before, name: '改了名字' }, [badSchedule]),
@@ -598,4 +601,21 @@ test('saveCourse：每条时段各自带教室（v3）', async () => {
     schedules.map((s) => [s.dayOfWeek, s.location]),
     [[1, '思源楼-301'], [5, '思源楼-107']]
   );
+});
+
+test('saveCourse：教学班跟着时段存（v4）', async () => {
+  const { store } = await (async () => {
+    const f = makeStore();
+    await f.store.ensureCurrentTimetable(NOW);
+    return f;
+  })();
+  await store.saveCourse(course('高等数学（A）'), [
+    sched(1, 1, 2, WEEKS_1_TO_16, '教三-101'),
+    sched(2, 3, 4, WEEKS_1_TO_16, '教三-201'),
+  ]);
+  const schedules = await store.readSchedulesOf(store.currentId);
+  assert.equal(schedules.length, 2);
+  for (const s of schedules) {
+    assert.equal(s.classGroup, '', '没填班级就是空串，不能是 undefined');
+  }
 });

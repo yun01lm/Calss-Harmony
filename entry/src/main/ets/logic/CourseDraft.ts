@@ -27,6 +27,8 @@ export interface DraftRow {
   readonly weeks: string;
   /** 这一次上课的教室；`''` = 用课程的地点 */
   readonly location: string;
+  /** 这一段的教学班（只读透传，编辑器不编辑它） */
+  readonly classGroup: string;
 }
 
 /** 校验通过、可直接入库的一段时段；`weekMask` 用 bigint，交给 `maskToDb` 在库边界转换 */
@@ -37,6 +39,8 @@ export interface DraftSchedule {
   readonly weekMask: bigint;
   /** 这一次上课的教室；`''` = 用课程的地点 */
   readonly location: string;
+  /** 这一段的教学班（合并键的一部分，见 CourseMerge.courseKeyOf） */
+  readonly classGroup: string;
 }
 
 /** 一次校验的全部产出（成功时 `error === ''`） */
@@ -76,8 +80,22 @@ export class CourseDraft {
     '格式：1-16、2,4,6-8 或 1-15单（单双周）；全角符号、「周」字保存时会自动纠正';
 
   /** 造一行草稿（`.ets` 里不能用对象字面量直接赋给只读接口，统一走这里） */
-  static row(day: number, start: number, end: number, weeks: string, location: string = ''): DraftRow {
-    return { day: day, start: start, end: end, weeks: weeks, location: location };
+  static row(
+    day: number,
+    start: number,
+    end: number,
+    weeks: string,
+    location: string = '',
+    classGroup: string = ''
+  ): DraftRow {
+    return {
+      day: day,
+      start: start,
+      end: end,
+      weeks: weeks,
+      location: location,
+      classGroup: classGroup,
+    };
   }
 
   /** 点空白格新建时的默认行：该列星期、该行节次起、下一节止 */
@@ -169,7 +187,8 @@ export class CourseDraft {
           lo,
           hi,
           weeksText === null ? r.weeks : weeksText,
-          r.location.trim()
+          r.location.trim(),
+          r.classGroup
         )
       );
     }
@@ -204,6 +223,7 @@ export class CourseDraft {
         endPeriod: r.end,
         weekMask: mask,
         location: r.location,
+        classGroup: r.classGroup,
       });
     }
     const ok: DraftResult = {
