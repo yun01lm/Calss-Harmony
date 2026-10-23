@@ -30,6 +30,8 @@ function item(
     startPeriod: start,
     endPeriod: end,
     weekMask: mask,
+    // 与 Index.toImportItems 一致：每条时段也带上这一格的教室
+    location: location,
   }));
   return { course: course(name, teacher, location), schedules: schedules };
 }
@@ -47,13 +49,27 @@ test('同一门课的两次上课合并成一门课两个时段', () => {
   assert.deepEqual(out.dropped, []);
 });
 
-test('教师或地点不同的同名课不合并（它们是不同的课）', () => {
+test('教师不同的同名课不合并（那确实是两门课）', () => {
   const out = mergeCourseItems([
     item('大学物理', [[2, 1, 2, WEEKS_1_TO_16]], '张老师', '教三-201'),
     item('大学物理', [[4, 3, 4, WEEKS_1_TO_16]], '李老师', '教三-201'),
-    item('大学物理', [[5, 5, 6, WEEKS_1_TO_16]], '张老师', '实验楼-105'),
   ]);
-  assert.equal(out.items.length, 3);
+  assert.equal(out.items.length, 2);
+});
+
+test('教师相同、教室不同的同名课合并成一门（v3：教室跟着时段走）', () => {
+  // 真实课表就是这样：数字电子技术基础周一在 301、周五在 107，是同一位老师
+  const out = mergeCourseItems([
+    item('数字电子技术基础', [[1, 9, 10, WEEKS_1_TO_16]], '孙红霞', '思源楼-301'),
+    item('数字电子技术基础', [[5, 1, 2, WEEKS_1_TO_16]], '孙红霞', '思源楼-107'),
+  ]);
+  assert.equal(out.items.length, 1);
+  assert.equal(out.items[0].schedules.length, 2);
+  // 每条时段保留自己的教室
+  assert.equal(out.items[0].schedules[0].location, '思源楼-301');
+  assert.equal(out.items[0].schedules[1].location, '思源楼-107');
+  // 课程上的地点留第一条，供旧界面/兜底显示
+  assert.equal(out.items[0].course.location, '思源楼-301');
 });
 
 test('完全重复的时段只留一条，并计数', () => {

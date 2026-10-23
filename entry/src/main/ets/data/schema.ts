@@ -15,8 +15,8 @@
  */
 export const DB_NAME = 'calss.db';
 
-/** 当前 schema 版本（v2 = 多课表） */
-export const DB_VERSION = 2;
+/** 当前 schema 版本（v2 = 多课表；v3 = 每次上课各有自己的教室） */
+export const DB_VERSION = 3;
 
 /** v1 里那三张业务表**没有** timetableId（迁移要补） */
 export const V1_SCHEMA: string[] = [
@@ -82,7 +82,40 @@ export const V2_SCHEMA: string[] = [
 ];
 
 /**
- * 本应用认识的全部表名（v1 + v2 合并）。
+ * v3（全新安装）：在 v2 基础上给 `course_schedules` 加 `location`。
+ *
+ * 为什么要给**每次上课**单独记教室：一门课一周上两次、两次在不同楼是常态
+ * （真实课表里"数字电子技术基础"周一在 301、周五在 107）。教室原本挂在课程上，
+ * 于是"按名称+教师+教室"归并时这种课会被拆成两门 —— 改一门只改一半。
+ * 现在教室跟着时段走，课程上的 `location` 退化成"默认教室"（时段没填时用它）。
+ */
+const COURSE_SCHEDULES_V2 =
+  'CREATE TABLE IF NOT EXISTS `course_schedules` (' +
+  '`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `courseId` INTEGER NOT NULL, ' +
+  '`dayOfWeek` INTEGER NOT NULL, `startPeriod` INTEGER NOT NULL, ' +
+  '`endPeriod` INTEGER NOT NULL, `weekMask` INTEGER NOT NULL, ' +
+  'FOREIGN KEY(`courseId`) REFERENCES `courses`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)';
+
+const COURSE_SCHEDULES_V3 =
+  'CREATE TABLE IF NOT EXISTS `course_schedules` (' +
+  '`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `courseId` INTEGER NOT NULL, ' +
+  '`dayOfWeek` INTEGER NOT NULL, `startPeriod` INTEGER NOT NULL, ' +
+  '`endPeriod` INTEGER NOT NULL, `weekMask` INTEGER NOT NULL, ' +
+  '`location` TEXT NOT NULL DEFAULT \'\', ' +
+  'FOREIGN KEY(`courseId`) REFERENCES `courses`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)';
+
+/**
+ * v3 的全新安装 schema = v2 把 `course_schedules` 换成带 `location` 的那条。
+ *
+ * 用"替换那一条"而不是整份复制：两份 SQL 一字不差地抄两遍，
+ * 早晚会有人只改了其中一份（这正是迁移类 bug 的经典来源）。
+ */
+export const V3_SCHEMA: string[] = V2_SCHEMA.map((sql: string): string => {
+  return sql === COURSE_SCHEDULES_V2 ? COURSE_SCHEDULES_V3 : sql;
+});
+
+/**
+ * 本应用认识的全部表名（v1 + v2 + v3 合并）。
  *
  * 用途：打开库时先看 `sqlite_master` 里到底有哪些表，用来判断"这个库现在处于什么状态"。
  * 这一步是**防静默损坏**的关键 —— 见 `data/bootstrap.ts` 里对"版本号为 0 但表已存在"的处理。

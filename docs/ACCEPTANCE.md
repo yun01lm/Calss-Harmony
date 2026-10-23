@@ -57,7 +57,7 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 
 | 项 | 结果 |
 |---|---|
-| Node 断言 | **236 条 / 17 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
+| Node 断言 | **243 条 / 17 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
 | 架构守卫 | `logic/`、`data/` 零平台依赖、相对 import 带 `.ts`、不跨层（`node tools/check-architecture.mjs`，见第 8 节） |
 | ArkTS 构建 | `BUILD SUCCESSFUL`（debug 与 release 都验过，release 装到模拟器跑过） |
 | CI | GitHub Actions：每次 push / PR 跑全部断言 + 架构守卫脚本 |

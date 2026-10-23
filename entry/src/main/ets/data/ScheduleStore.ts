@@ -168,7 +168,7 @@ export class ScheduleStore {
 
   async readSchedulesOf(timetableId: number): Promise<CourseSchedule[]> {
     const rows: SqlRow[] = await this.db.query(
-      'SELECT id, courseId, dayOfWeek, startPeriod, endPeriod, weekMask FROM course_schedules ' +
+      'SELECT id, courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location FROM course_schedules ' +
         'WHERE courseId IN (SELECT id FROM courses WHERE timetableId = ?) ORDER BY courseId, dayOfWeek, startPeriod',
       [timetableId]
     );
@@ -453,15 +453,15 @@ export class ScheduleStore {
         appendInsertCourse(steps, timetableId, item);
         added++;
       } else {
-        // 换掉它的全部上课时段（星期/节次/周次都可能变），保留颜色与备注
+        // 换掉它的全部上课时段（星期/节次/周次/教室都可能变），保留颜色与备注
         steps.push({ sql: 'DELETE FROM course_schedules WHERE courseId = ?', params: [old.id] });
         for (const s of item.schedules) {
           assertSafeMask(s.weekMask);
           steps.push({
             sql:
-              'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
-              'VALUES (?, ?, ?, ?, ?)',
-            params: [old.id, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
+              'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
+              'VALUES (?, ?, ?, ?, ?, ?)',
+            params: [old.id, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
           });
         }
         if (item.course.category.length > 0 && item.course.category !== old.category) {
@@ -698,6 +698,7 @@ function toSchedule(row: SqlRow): CourseSchedule {
     startPeriod: row.int('startPeriod'),
     endPeriod: row.int('endPeriod'),
     weekMask: row.int('weekMask'),
+    location: row.text('location'),
   };
   return s;
 }
@@ -749,9 +750,9 @@ function appendInsertCourse(steps: SqlStatement[], timetableId: number, item: Co
     assertSafeMask(s.weekMask);
     steps.push({
       sql:
-        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
-        'SELECT (SELECT MAX(id) FROM courses WHERE timetableId = ?), ?, ?, ?, ?',
-      params: [timetableId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
+        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
+        'SELECT (SELECT MAX(id) FROM courses WHERE timetableId = ?), ?, ?, ?, ?, ?',
+      params: [timetableId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
     });
   }
 }
@@ -765,9 +766,9 @@ function appendScheduleInserts(
   for (const s of schedules) {
     steps.push({
       sql:
-        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
-        'VALUES (?, ?, ?, ?, ?)',
-      params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
+        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location) ' +
+        'VALUES (?, ?, ?, ?, ?, ?)',
+      params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask, s.location],
     });
   }
 }

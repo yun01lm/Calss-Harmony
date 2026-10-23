@@ -1502,6 +1502,8 @@ struct Index {
           startPeriod: rs.startPeriod,
           endPeriod: rs.endPeriod,
           weekMask: maskToDb(rs.weekMask),
+          // 解析器给的是"这一次的教室"；课程那条也留着（旧界面/兜底显示用）
+          location: rc.location,
         };
         schedules.push(s);
       }
@@ -1543,11 +1545,14 @@ struct Index {
         await store.createTimetable(name, start, weeks, fromId, Date.now());
         await store.replaceCourses(this.importCourses);
       }
-      this.importOpen = false;
-      this.importBusy = false;
-      // 导入结束就把通道的目的拨回 spike：否则开发者面板的"跑 PDF spike"会把回传送进导入流程
+      // **先刷新再关面板**：写库那一刻课程 id 全变了，而网格还是旧的 weeks。
+      // 先关面板的话，用户紧接着点色块会拿到"旧 id + 新库"的组合 ——
+      // 详情卡上出现"课名是 A、教师/教室是 B"的串课（实测在模拟器上真的会看到）。
+      this.importStage = '刷新中…';
       this.pdfPurpose = 'spike';
       await this.load();
+      this.importOpen = false;
+      this.importBusy = false;
     } catch (e) {
       const err = e as Error;
       this.importBusy = false;
@@ -1924,7 +1929,8 @@ struct Index {
           s.dayOfWeek,
           s.startPeriod,
           s.endPeriod,
-          WeekMasks.format(maskFromDb(s.weekMask))
+          WeekMasks.format(maskFromDb(s.weekMask)),
+          s.location
         )
       );
     }
@@ -1973,6 +1979,7 @@ struct Index {
           startPeriod: s.startPeriod,
           endPeriod: s.endPeriod,
           weekMask: maskToDb(s.weekMask),
+          location: s.location,
         });
       }
       await store.saveCourse(course, schedules);
@@ -2019,8 +2026,29 @@ struct Index {
     }
   }
 
-  private findCourse(id: number): Course | null {
+  /**
+   * 这个色块"这一次"的教室：找它对应的那条时段，教室为空时退回课程地点。
+   * 与 `WeekItems.locationOf` 是同一套规则（格子里显示的也是它）。
+   */
+  private roomOfItem(item: WeekItem, course: Course | null): string {
     const snap: Snapshot | null = this.snapshot;
+    if (snap !== null) {
+      for (const s of snap.schedules) {
+        if (
+          s.courseId === item.id && s.dayOfWeek === item.dayOfWeek &&
+          s.startPeriod === item.startPeriod && s.endPeriod === item.endPeriod
+        ) {
+          if (s.location.trim().length > 0) {
+            return s.location;
+          }
+          break;
+        }
+      }
+    }
+    return course === null ? '' : course.location;
+  }
+
+  private findCourse(id: number): Course | null {    const snap: Snapshot | null = this.snapshot;
     if (snap === null || id <= 0) {
       return null;
     }
@@ -2121,13 +2149,18 @@ struct Index {
       return;
     }
     this.detailCourseId = item.id;
-    const course: Course | null = this.findCourse(item.id);
+    const found: Course | null = this.findCourse(item.id);
+    // 防御：id 能找到课程、但名字对不上，说明这份 `weeks` 是旧快照（刚写完库、网格还没重建）。
+    // 这种情况下宁可不显示教师/教室，也不要把另一门课的信息安在这一格上。
+    const course: Course | null = found !== null && found.name === item.title ? found : null;
+    // v3：教室跟着时段走，详情里要显示**这一次**的教室（同一门课两次换楼很正常）
+    const room: string = this.roomOfItem(item, course);
     this.detailTitle = item.title;
     this.detailLines = [
       '周' + ['一', '二', '三', '四', '五', '六', '日'][item.dayOfWeek - 1] +
         ` 第 ${item.startPeriod}-${item.endPeriod} 节`,
       '教师：' + (course === null || course.teacher.length === 0 ? '（未填）' : course.teacher),
-      '教室：' + (course === null || course.location.length === 0 ? '（未填）' : course.location),
+      '教室：' + (room.length === 0 ? '（未填）' : room),
       '周次：' + this.weekMaskTextOf(item),
     ];
     if (item.conflicts.length > 0) {
@@ -2362,6 +2395,8 @@ struct Index {
       startPeriod: startPeriod,
       endPeriod: endPeriod,
       weekMask: weekMask,
+      // 示例课（开发者入口）只用课程地点，时段上的教室留空
+      location: '',
     };
     return schedule;
   }
@@ -2468,6 +2503,7 @@ struct Index {
         startPeriod: s.startPeriod,
         endPeriod: s.endPeriod,
         weekMask: s.weekMask,
+        location: s.location,
       };
       out.push(like);
     }

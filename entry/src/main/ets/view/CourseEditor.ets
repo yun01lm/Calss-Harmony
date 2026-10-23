@@ -193,7 +193,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(i + 1, row.start, row.end, row.weeks));
+            this.replaceRow(index, CourseDraft.row(i + 1, row.start, row.end, row.weeks, row.location));
           })
         Select(this.periodOptions())
           .selected(row.start - 1)
@@ -201,7 +201,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(row.day, i + 1, row.end, row.weeks));
+            this.replaceRow(index, CourseDraft.row(row.day, i + 1, row.end, row.weeks, row.location));
           })
         Text('~')
           .fontSize(12)
@@ -212,7 +212,7 @@ export struct CourseEditor {
           .font({ size: 12 })
           .height(30)
           .onSelect((i: number) => {
-            this.replaceRow(index, CourseDraft.row(row.day, row.start, i + 1, row.weeks));
+            this.replaceRow(index, CourseDraft.row(row.day, row.start, i + 1, row.weeks, row.location));
           })
         Blank()
         if (this.rows.length > 1) {
@@ -236,7 +236,17 @@ export struct CourseEditor {
         .borderWidth(this.error.length > 0 && row.weeks.trim().length === 0 ? 1 : 0)
         .borderColor('#C62828')
         .onChange((v: string) => {
-          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, v));
+          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, v, row.location));
+        })
+
+      // v3：教室跟着这一段时间走。留空就用上面"地点"那一格（同一门课两次换楼很常见）
+      TextInput({ text: row.location, placeholder: '这一段在哪上（留空=用上面的地点）' })
+        .fontSize(12)
+        .height(34)
+        .width('100%')
+        .backgroundColor('#F6EFE8')
+        .onChange((v: string) => {
+          this.replaceRow(index, CourseDraft.row(row.day, row.start, row.end, row.weeks, v));
         })
     }
     .width('100%')
@@ -278,7 +288,7 @@ export struct CourseEditor {
       ? CourseDraft.newRow(1, 1, this.periodCount)
       : this.rows[this.rows.length - 1];
     const next: DraftRow[] = this.rows.slice();
-    next.push(CourseDraft.row(base.day, base.start, base.end, base.weeks));
+    next.push(CourseDraft.row(base.day, base.start, base.end, base.weeks, base.location));
     this.rows = next;
   }
 

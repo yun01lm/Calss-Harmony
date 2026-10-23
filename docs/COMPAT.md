@@ -56,7 +56,7 @@
 | 日期运算 | `java.time.LocalDate` | **epochDay 整数**（不直接用 `Date`，规避时区/夏令时） |
 | 程序化翻页 | `PagerState.animateScrollToPage` | `SwiperController.changeIndex`（两者都会触发回调，抑制规则一致） |
 | 数据库存储位置 | `context.getDatabasePath("calss.db")` | relationalStore 沙箱（`databaseDir/rdb/`），库名同为 `calss.db` |
-| 库版本号 | Room `version = 2` | SQLite `user_version = 2`（同一个字段，含义一致） |
+| 库版本号 | Room `version = 2` | SQLite `user_version = 3`（v3 = 每次上课各自的教室；v2 之前与 Android 同构） |
 
 ## 7. 课程编辑：保存按钮在顶栏，软键盘盖不住
 
@@ -80,7 +80,7 @@
 | 归并位置 | `pdf/SchedulePdfParser.kt` 的 `merge()`：解析完立刻按「名称+教师+地点」合并 | `data/CourseMerge.ts` 的 `mergeCourseItems()`，由 `Index.onImportPayload` 调用，`ScheduleStore.mergeCourses/replaceCourses` 内部再兜一次 |
 | 为什么必须做 | —— | 两个解析器都是**按格子/按段落**输出：一门课一周上两次就是两条 `RawCourse`。不归并会写成 **2 条课程行** —— 改一门只改一半、删一门只删一半，合并导入还会永远更新不到另一条（`docs/REVIEW.md` 的 H-2） |
 | 副产品 | 无 | 一个时段都认不出（周次掩码 = 0）的课会被**丢掉并报出课程名**，而不是存进库里变成"所有周都看不见的课" |
-| 已知限制 | 同一门课两次上课**地点不同**时合并不到一起（`location` 在 Course 上，不在每次时段的 `course_schedules` 上） | 同左。真实课表里就有（"算法分析与设计"周一在 404、周三在 137），只能留成两门课 —— 要修得给时段加 location 字段，属于 schema v3 |
+| 已知限制 | 同一门课两次上课**地点不同**时合并不到一起（`location` 在 Course 上，不在每次时段的 `course_schedules` 上） | **v3 已解决**：教室跟着时段走（`course_schedules.location`），合并键改成「名称+教师」。真实课表 22 条格子 → 14 门课，其中"算法分析与设计"就是 1 门课 2 个时段（周一 404 / 周三 137） |
 
 ## 10. 保存课程的写库顺序
 
@@ -100,3 +100,12 @@
 | 反向保护 | —— | `英语:听力`、`体育Ⅲ-网球`、`3D打印` 这类正常名字一个字都不动（`tests/pdf-parsers.test.ts` 有断言） |
 
 > 新增差异时请在此追加一节，并在对应测试里留下断言。
+
+## 12. 合并键从「名称+教师+地点」改成「名称+教师」（v3）
+
+| | Android 版 | 鸿蒙版 |
+|---|---|---|
+| 合并键 | 名称 + 教师 + 地点 | **名称 + 教师**（地点跟着每条时段走） |
+| 为什么改 | —— | 真实课表里一门课一周上两次、两次在不同楼是常态（"数字电子技术基础"周一 301、周五 107）。带上地点的话这种课会被拆成两门：改一门只改一半、删一门只删一半。v3 给 `course_schedules` 加了 `location`，地点不再影响"是不是同一门课" |
+| 副作用 | —— | 同名同教师、但确实是两门不同的课（极少见）会被合并成一门多时段。比"同一门课被拆成两门"轻，接受 |
+| 升级 | —— | v2 → v3：`ALTER TABLE course_schedules ADD COLUMN location TEXT NOT NULL DEFAULT ''` + 用课程的教室回填旧数据；v1 的库一次跑完 v1→v2→v3。与 Android 的库不再同构，跨平台迁移需要额外映射（目前没做） |

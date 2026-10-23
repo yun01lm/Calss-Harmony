@@ -31,16 +31,21 @@ interface Group {
   readonly seen: Map<string, boolean>;
   /** 至少有一条时段是真能画出来的（掩码非 0） */
   hasVisible: boolean;
+  /** 第一个非空教室：课程自身的 `location` 为空时用它兜底（旧数据的显示） */
+  firstLocation: string;
 }
 
 /**
- * 课程的唯一键：名称 + 教师 + 地点。
+ * 课程的唯一键：名称 + 教师。
  *
- * 必须与 `ScheduleStore.courseKey` 完全一致（合并导入用的是同一套语义），
- * 所以那边现在直接调这里，不再各写一份。
+ * **v3 起不再带教室**：教室跟着每条时段走（`CourseSchedule.location`），
+ * 同一门课在不同楼上完全正常。带上教室的话，"数字电子技术基础"（周一 301、周五 107）
+ * 会被拆成两门课 —— 改一门只改一半，合并导入也永远更新不到另一条。
+ *
+ * 与 `ScheduleStore` 里判断"是不是同一门课"必须用同一个键，所以那边直接调这里。
  */
 export function courseKeyOf(course: Course): string {
-  return course.name.trim() + '\u0001' + course.teacher.trim() + '\u0001' + course.location.trim();
+  return course.name.trim() + '\u0001' + course.teacher.trim();
 }
 
 /** 一条时段能否真的在网格上出现（掩码 0 = 每周都不上 = 永远不出现） */
@@ -49,7 +54,7 @@ function isVisible(s: CourseSchedule): boolean {
 }
 
 function scheduleKey(s: CourseSchedule): string {
-  return `${s.dayOfWeek}|${s.startPeriod}|${s.endPeriod}|${s.weekMask}`;
+  return `${s.dayOfWeek}|${s.startPeriod}|${s.endPeriod}|${s.weekMask}|${s.location}`;
 }
 
 /**
@@ -72,6 +77,7 @@ export function mergeCourseItems(items: CourseWithSchedules[]): MergeOutcome {
         schedules: [],
         seen: new Map<string, boolean>(),
         hasVisible: false,
+        firstLocation: item.course.location.trim(),
       };
       groups.set(key, g);
       order.push(key);
@@ -88,6 +94,9 @@ export function mergeCourseItems(items: CourseWithSchedules[]): MergeOutcome {
       group.schedules.push(s);
       if (isVisible(s)) {
         group.hasVisible = true;
+      }
+      if (group.firstLocation.length === 0 && s.location.trim().length > 0) {
+        group.firstLocation = s.location.trim();
       }
     }
   }
@@ -110,7 +119,20 @@ export function mergeCourseItems(items: CourseWithSchedules[]): MergeOutcome {
         visible.push(s);
       }
     }
-    const merged: CourseWithSchedules = { course: g.course, schedules: visible };
+    // 课程自身的 location 为空时，用第一条时段的教室兜底：旧数据/旧界面都只认课程地点
+    const course: Course = g.course.location.trim().length > 0 || g.firstLocation.length === 0
+      ? g.course
+      : {
+        id: g.course.id,
+        timetableId: g.course.timetableId,
+        name: g.course.name,
+        teacher: g.course.teacher,
+        location: g.firstLocation,
+        color: g.course.color,
+        category: g.course.category,
+        note: g.course.note,
+      };
+    const merged: CourseWithSchedules = { course: course, schedules: visible };
     out.push(merged);
   }
 

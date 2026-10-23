@@ -374,7 +374,7 @@ export class Rdb implements SqlRunner {
    */
   private async existingColumns(): Promise<string[]> {
     const out: string[] = [];
-    for (const table of ['courses', 'custom_events', 'time_slots']) {
+    for (const table of ['courses', 'course_schedules', 'custom_events', 'time_slots']) {
       let rows: RdbRow[] = [];
       try {
         rows = await this.query("SELECT name FROM pragma_table_info('" + table + "')");

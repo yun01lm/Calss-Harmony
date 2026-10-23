@@ -126,7 +126,7 @@ function planFor(
 /** 现有列（形如 `courses.timetableId`），bootstrap 用它决定要不要 ALTER */
 function columnsOf(db: DatabaseSync): string[] {
   const out: string[] = [];
-  for (const table of ['courses', 'custom_events', 'time_slots']) {
+  for (const table of ['courses', 'course_schedules', 'custom_events', 'time_slots']) {
     let rows: Array<Record<string, unknown>> = [];
     try {
       rows = db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<
@@ -153,13 +153,13 @@ test('fresh：空库 → 建 6 张表 + 播种第 1 张课表', () => {
   assert.ok(plan.steps.length > 0);
 
   runSteps(db, plan.steps);
-  db.exec('PRAGMA user_version = 2'); // 平台层在事务提交后写版本号，这里等价模拟
+  db.exec('PRAGMA user_version = 3'); // 平台层在事务提交后写版本号，这里等价模拟
 
   assert.deepEqual(
     tablesOf(db),
     ['course_schedules', 'courses', 'custom_events', 'preferences', 'time_slots', 'timetables']
   );
-  assert.equal(userVersion(db), 2);
+  assert.equal(userVersion(db), 3);
 
   const tt = db
     .prepare('SELECT id, name, startDateEpochDay, totalWeeks, isPrimary, createdAt FROM timetables')
@@ -216,13 +216,13 @@ test('fresh：同一份步骤跑两遍不会重复播种（幂等守卫的意义
 
 // ---------------------------------------------------------------- upgrade
 
-test('upgrade：v1 → v2 旧数据全归第 1 张课表', () => {
+test('upgrade：v1 → v3 旧数据全归第 1 张课表（v1→v2→v3 一步跑完）', () => {
   const db = makeV1Db(true);
   const legacy = { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 };
   const plan = planFor(db, 1, legacy);
   assert.equal(plan.kind, BOOTSTRAP_UPGRADE);
   assert.equal(plan.fromVersion, 1);
-  assert.equal(plan.targetVersion, 2);
+  assert.equal(plan.targetVersion, 3);
 
   // 顺序约束：读旧学期之后才 DROP，加列之后才回填
   const idx = (needle: string): number => plan.steps.findIndex((s) => s.sql.indexOf(needle) >= 0);
@@ -231,10 +231,10 @@ test('upgrade：v1 → v2 旧数据全归第 1 张课表', () => {
   assert.ok(idx('UPDATE courses SET timetableId = 1') < idx('DROP TABLE IF EXISTS semesters'));
 
   runSteps(db, plan.steps);
-  db.exec('PRAGMA user_version = 2');
+  db.exec('PRAGMA user_version = 3');
 
   assert.equal(count(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='semesters'"), 0);
-  assert.equal(userVersion(db), 2);
+  assert.equal(userVersion(db), 3);
 
   const tt = db.prepare('SELECT * FROM timetables').all() as Array<Record<string, string | number>>;
   assert.equal(tt.length, 1);
@@ -322,18 +322,29 @@ test('repair：版本号是 0 但表已在 → 只补版本号，不重复播种
   assert.equal(count(db, 'SELECT COUNT(*) FROM time_slots'), 12);
 });
 
-test('repair：版本号是 1 但表已经是 v2 形状 → 只补版本号（不能重跑迁移）', () => {
+test('repair：版本号是 1 但表已经是 v2 形状 → 只补 v3 那一列，不重跑 v1→v2', () => {
   const db = makeV1Db(true);
   // 先真的迁一遍，再把版本号按回 1，模拟"迁移提交了、PRAGMA 没写进去"
   runSteps(db, migrateV1toV2({ name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 }, NOW, []));
   db.exec('PRAGMA user_version = 1');
 
   const plan = planFor(db, 1, { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 });
-  assert.equal(plan.kind, BOOTSTRAP_REPAIR);
-  assert.deepEqual(plan.steps, []);
-  // 关键：再来一次也不会撞 UNIQUE / duplicate column
+  // v2 形状但还没有 location 列：只需要跑 v2→v3，不能重跑 v1→v2（会撞 UNIQUE）
+  assert.equal(plan.kind, BOOTSTRAP_UPGRADE);
+  assert.equal(plan.steps.length, 2, '一条 ALTER + 一条回填');
+  assert.ok(plan.steps[0].sql.indexOf('ALTER TABLE course_schedules ADD COLUMN location') >= 0);
+  assert.equal(
+    plan.steps.filter((s) => s.sql.indexOf('INSERT INTO timetables') >= 0).length,
+    0,
+    '不能再插一次 timetables'
+  );
   runSteps(db, plan.steps);
   assert.equal(count(db, 'SELECT COUNT(*) FROM timetables'), 1);
+
+  // 连 location 也在了 → 这才是纯 repair（只补版本号）
+  const again = planFor(db, 1, { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 });
+  assert.equal(again.kind, BOOTSTRAP_REPAIR, 'location 已在 → 纯 repair');
+  assert.deepEqual(again.steps, []);
 });
 
 test('v1→v2 的步骤本身可以重跑：跑两遍结果一致，不抛错', () => {

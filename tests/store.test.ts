@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, V2_SCHEMA } from '../entry/src/main/ets/data/schema.ts';
+import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, V3_SCHEMA } from '../entry/src/main/ets/data/schema.ts';
 import { ScheduleStore } from '../entry/src/main/ets/data/ScheduleStore.ts';
 import {
   assertSafeMask,
@@ -32,7 +32,7 @@ interface Fixture {
 
 function makeStore(options: SqliteRunnerOptions = {}): Fixture {
   const runner = SqliteRunner.open(options);
-  for (const sql of V2_SCHEMA) {
+  for (const sql of V3_SCHEMA) {
     runner.db.exec(sql);
   }
   return { store: new ScheduleStore(runner), runner };
@@ -52,7 +52,13 @@ function course(name: string, patch: Partial<Course> = {}): Course {
   };
 }
 
-function sched(dayOfWeek: number, startPeriod: number, endPeriod: number, weeks: bigint): CourseSchedule {
+function sched(
+  dayOfWeek: number,
+  startPeriod: number,
+  endPeriod: number,
+  weeks: bigint,
+  location: string = ''
+): CourseSchedule {
   return {
     id: 0,
     courseId: 0,
@@ -60,6 +66,7 @@ function sched(dayOfWeek: number, startPeriod: number, endPeriod: number, weeks:
     startPeriod: startPeriod,
     endPeriod: endPeriod,
     weekMask: maskToDb(weeks),
+    location: location,
   };
 }
 
@@ -577,4 +584,18 @@ test('掩码安全位：越界直接抛错，不安静存一个错的周次', ()
   assert.throws(() => maskToDb(BigInt(-1)), /不能为负数/);
   assert.throws(() => assertSafeMask(1.5), /不合法/);
   assert.throws(() => assertSafeMask(-1), /不合法/);
+});
+
+test('saveCourse：每条时段各自带教室（v3）', async () => {
+  const { store } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  await store.saveCourse(course('数字电子技术基础', { location: '思源楼-301' }), [
+    sched(1, 9, 10, WEEKS_1_TO_16, '思源楼-301'),
+    sched(5, 1, 2, WEEKS_1_TO_16, '思源楼-107'),
+  ]);
+  const schedules = await store.readSchedulesOf(store.currentId);
+  assert.deepEqual(
+    schedules.map((s) => [s.dayOfWeek, s.location]),
+    [[1, '思源楼-301'], [5, '思源楼-107']]
+  );
 });

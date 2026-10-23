@@ -25,6 +25,8 @@ export interface DraftRow {
   readonly end: number;
   /** 用户原始输入（未规范化）；规范化后的文本由 `check` 回填 */
   readonly weeks: string;
+  /** 这一次上课的教室；`''` = 用课程的地点 */
+  readonly location: string;
 }
 
 /** 校验通过、可直接入库的一段时段；`weekMask` 用 bigint，交给 `maskToDb` 在库边界转换 */
@@ -33,6 +35,8 @@ export interface DraftSchedule {
   readonly startPeriod: number;
   readonly endPeriod: number;
   readonly weekMask: bigint;
+  /** 这一次上课的教室；`''` = 用课程的地点 */
+  readonly location: string;
 }
 
 /** 一次校验的全部产出（成功时 `error === ''`） */
@@ -72,8 +76,8 @@ export class CourseDraft {
     '格式：1-16、2,4,6-8 或 1-15单（单双周）；全角符号、「周」字保存时会自动纠正';
 
   /** 造一行草稿（`.ets` 里不能用对象字面量直接赋给只读接口，统一走这里） */
-  static row(day: number, start: number, end: number, weeks: string): DraftRow {
-    return { day: day, start: start, end: end, weeks: weeks };
+  static row(day: number, start: number, end: number, weeks: string, location: string = ''): DraftRow {
+    return { day: day, start: start, end: end, weeks: weeks, location: location };
   }
 
   /** 点空白格新建时的默认行：该列星期、该行节次起、下一节止 */
@@ -164,7 +168,8 @@ export class CourseDraft {
           CourseDraft.clampDay(r.day),
           lo,
           hi,
-          weeksText === null ? r.weeks : weeksText
+          weeksText === null ? r.weeks : weeksText,
+          r.location.trim()
         )
       );
     }
@@ -198,6 +203,7 @@ export class CourseDraft {
         startPeriod: r.start,
         endPeriod: r.end,
         weekMask: mask,
+        location: r.location,
       });
     }
     const ok: DraftResult = {

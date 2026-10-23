@@ -48,6 +48,12 @@ export interface ScheduleLike {
   readonly endPeriod: number;
   /** 周次掩码（number；逻辑层内部转 bigint 判断） */
   readonly weekMask: number;
+  /**
+   * 这一次上课的教室；`''` = 用课程上的 `location`。
+   *
+   * 可选：老调用方（测试、旧数据）只给课程地点也能工作 —— 缺省就等于 `''`。
+   */
+  readonly location?: string;
 }
 
 /** 自定义安排 */
@@ -77,6 +83,17 @@ export interface WeekBuildInput {
 export class WeekItems {
   static readonly KIND_COURSE: string = 'course';
   static readonly KIND_EVENT: string = 'event';
+
+  /**
+   * 这一次上课的教室：时段自己的优先，没填才退回课程地点。
+   *
+   * 单独成一个函数是因为**详情卡、导入预览、导出**都要用同一套规则 ——
+   * 各自写一遍 trim/判空，早晚出现"格子里是 A、详情里是 B"。
+   */
+  static locationOf(schedule: ScheduleLike, course: CourseLike): string {
+    const own: string = schedule.location === undefined ? '' : schedule.location.trim();
+    return own.length > 0 ? own : course.location;
+  }
 
   /** 最少画几行（一学期只有 4 节课时，界面上也留出 8 节的网格，避免"半屏空着"） */
   static readonly MIN_PERIODS: number = 8;
@@ -110,8 +127,9 @@ export class WeekItems {
           id: course.id,
           title: course.name,
           // 格子里只放教室的短形式（格子只有 ~45vp 宽，完整教室名永远显示不全）；
-          // 教师和完整教室在详情里
-          subtitle: Locations.shortLocation(course.location),
+          // 教师和完整教室在详情里。
+          // v3 起教室跟着时段走：这一次的上课地点优先，没填才退回课程地点
+          subtitle: Locations.shortLocation(WeekItems.locationOf(s, course)),
           dayOfWeek: s.dayOfWeek,
           startPeriod: s.startPeriod,
           endPeriod: s.endPeriod,

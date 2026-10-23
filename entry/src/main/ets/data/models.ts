@@ -54,6 +54,14 @@ export interface CourseSchedule {
   readonly endPeriod: number;
   /** 周次位掩码（bit0 = 第 1 周）；与库交界处用 `maskFromDb` / `maskToDb` 转换 */
   readonly weekMask: number;
+  /**
+   * 这一次上课的教室；`''` = 用课程上的 `location`。
+   *
+   * 为什么教室要跟着时段走（v3）：一门课一周上两次、两次在不同楼是常态
+   * （真实课表里"数字电子技术基础"周一在 301、周五在 107）。教室只挂在课程上时，
+   * "按名称+教师+教室"归并会把这种课拆成两门 —— 改一门只改一半、删一门只删一半。
+   */
+  readonly location: string;
 }
 
 /** 自定义安排（自习/健身/约会等） */

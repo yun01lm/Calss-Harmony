@@ -23,9 +23,10 @@
  * 版本号 **高于** 当前应用支持的版本（用户装回了旧版本）时**直接抛错**：
  * 旧代码去操作新结构的库，是数据损坏的经典来源，宁可打不开也不要写坏。
  */
-import { DB_VERSION, PREF_CURRENT_TIMETABLE, V2_SCHEMA, KNOWN_TABLES } from './schema.ts';
+import { DB_VERSION, PREF_CURRENT_TIMETABLE, V3_SCHEMA, KNOWN_TABLES } from './schema.ts';
 import {
   migrateV1toV2,
+  migrateV2toV3,
   seedSlotRows,
   type LegacySemester,
   type MigrationStep,
@@ -80,7 +81,7 @@ export interface BootstrapPlan {
  */
 export function freshInstallSteps(nowMillis: number, startEpochDay: number): MigrationStep[] {
   const steps: MigrationStep[] = [];
-  for (const sql of V2_SCHEMA) {
+  for (const sql of V3_SCHEMA) {
     steps.push({ sql: sql });
   }
   // 显式给 id = 1：下面 12 条作息的 timetableId 要指向它（空表上 AUTOINCREMENT 本来也会给 1，
@@ -146,9 +147,30 @@ export function bootstrapPlan(input: BootstrapInput): BootstrapPlan {
     };
   }
 
+  const cols: string[] = input.existingColumns !== undefined ? input.existingColumns : [];
+  /** v3 那一列在不在（判断"迁移跑了但版本号没写进去"用） */
+  const hasScheduleLocation: boolean = cols.indexOf('course_schedules.location') >= 0;
+
+  if (current === 2) {
+    if (hasScheduleLocation) {
+      return {
+        kind: BOOTSTRAP_REPAIR,
+        fromVersion: current,
+        targetVersion: DB_VERSION,
+        steps: [],
+      };
+    }
+    return {
+      kind: BOOTSTRAP_UPGRADE,
+      fromVersion: current,
+      targetVersion: DB_VERSION,
+      steps: migrateV2toV3(cols),
+    };
+  }
+
   if (current === 1) {
-    const cols: string[] = input.existingColumns !== undefined ? input.existingColumns : [];
-    // "迁移事务提交了、版本号没写进去"：表已经是 v2 形状 → 只补版本号，别再跑一遍迁移。
+    // "迁移事务提交了、版本号没写进去"：表已经是 v2 形状 → 别再跑一遍 v1→v2，
+    // 只需要补上 v3 那一列（连它也在 = 纯 repair）。
     // 之前这里**只有 current === 0 有恢复路径**，v1 这种情况会重跑迁移，而旧实现不可重跑
     // （`INSERT timetables id=1` + 三条 ALTER），于是每次启动都撞 UNIQUE 约束 —— 库没坏但永远打不开。
     if (
@@ -156,10 +178,10 @@ export function bootstrapPlan(input: BootstrapInput): BootstrapPlan {
       hasAllColumns(cols, ['courses.timetableId', 'custom_events.timetableId', 'time_slots.timetableId'])
     ) {
       return {
-        kind: BOOTSTRAP_REPAIR,
+        kind: hasScheduleLocation ? BOOTSTRAP_REPAIR : BOOTSTRAP_UPGRADE,
         fromVersion: current,
         targetVersion: DB_VERSION,
-        steps: [],
+        steps: hasScheduleLocation ? [] : migrateV2toV3(cols),
       };
     }
     // 旧学期缺失时不能传 null：`migrateV1toV2(null, ...)` 会把 startDateEpochDay 写成 0
@@ -171,11 +193,16 @@ export function bootstrapPlan(input: BootstrapInput): BootstrapPlan {
         startDateEpochDay: input.defaultStartEpochDay,
         totalWeeks: FRESH_TOTAL_WEEKS,
       };
+    // v1 → v2 → v3 一次跑完（两步都是幂等的）
+    const steps: MigrationStep[] = migrateV1toV2(legacy, input.nowMillis, cols);
+    for (const step of migrateV2toV3(cols)) {
+      steps.push(step);
+    }
     return {
       kind: BOOTSTRAP_UPGRADE,
       fromVersion: current,
       targetVersion: DB_VERSION,
-      steps: migrateV1toV2(legacy, input.nowMillis, cols),
+      steps: steps,
     };
   }
 

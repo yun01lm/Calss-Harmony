@@ -105,15 +105,35 @@ function appendAddColumn(
   steps: MigrationStep[],
   existingColumns: string[],
   table: string,
-  column: string
+  column: string,
+  ddl: string = 'INTEGER NOT NULL DEFAULT 0'
 ): boolean {
   if (existingColumns.indexOf(table + '.' + column) >= 0) {
     return false;
   }
   steps.push({
-    sql: 'ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' INTEGER NOT NULL DEFAULT 0',
+    sql: 'ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + ddl,
   });
   return true;
+}
+
+/**
+ * v2 → v3：给 `course_schedules` 加 `location`（每次上课自己的教室）。
+ *
+ * 为什么回填成"课程的教室"而不是留空：v2 里教室只存在课程上，
+ * 直接留空会让升级后的旧数据全部没有地点；回填成原值，用户看到的和升级前一模一样。
+ * 回填条件是 `location = ''`，所以**重跑安全**（与 v1→v2 同一条要求）。
+ */
+export function migrateV2toV3(existingColumns: string[] = []): MigrationStep[] {
+  const steps: MigrationStep[] = [];
+  appendAddColumn(steps, existingColumns, 'course_schedules', 'location', "TEXT NOT NULL DEFAULT ''");
+  steps.push({
+    sql:
+      "UPDATE course_schedules SET location = COALESCE(" +
+      "(SELECT c.location FROM courses c WHERE c.id = course_schedules.courseId), '') " +
+      "WHERE location = ''",
+  });
+  return steps;
 }
 
 /**

@@ -16,10 +16,12 @@ import {
   PREF_CURRENT_TIMETABLE,
   V1_SCHEMA,
   V2_SCHEMA,
+  V3_SCHEMA,
   defaultSlots,
 } from '../entry/src/main/ets/data/schema.ts';
 import {
   migrateV1toV2,
+  migrateV2toV3,
   seedSlotRows,
   type MigrationStep,
 } from '../entry/src/main/ets/data/migrations.ts';
@@ -111,7 +113,7 @@ function insertLegacyCourse(
 
 /** 全新安装：建库 + 默认课表 + 默认作息 + 当前课表偏好 */
 function freshInstall(db: DatabaseSync, nowMillis: number, startDateEpochDay: number): void {
-  execAll(db, V2_SCHEMA);
+  execAll(db, V3_SCHEMA);
   db.prepare(
     'INSERT INTO timetables (name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
       "VALUES ('我的课表', ?, 20, 1, ?)"
@@ -130,6 +132,20 @@ function freshInstall(db: DatabaseSync, nowMillis: number, startDateEpochDay: nu
  * 与全新安装不同（`timetableId` 在最后）。Room 校验 schema 时同样只比较"列集合 + 每列属性"、
  * 不比较顺序，这里保持一致口径。
  */
+/** 现有列（形如 `course_schedules.location`），决定迁移要不要 ALTER */
+function columnsOf(db: DatabaseSync): string[] {
+  const out: string[] = [];
+  for (const table of ['courses', 'course_schedules', 'custom_events', 'time_slots']) {
+    const rows = db
+      .prepare(`SELECT name FROM pragma_table_info('${table}')`)
+      .all() as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      out.push(table + '.' + String(r.name));
+    }
+  }
+  return out;
+}
+
 function tableInfo(db: DatabaseSync, table: string): string[] {
   const rows = db.prepare('PRAGMA table_info(' + table + ')').all() as Array<Record<string, unknown>>;
   return rows
@@ -143,7 +159,7 @@ function indexNames(db: DatabaseSync, table: string): string[] {
 }
 
 // ---------------------------------------------------------------- A. 全新安装
-test('A1 全新安装：6 张表齐全，版本号 2', () => {
+test('A1 全新安装：6 张表齐全，版本号 3', () => {
   const db = openDb();
   freshInstall(db, 1000, 20000);
   const tables = (db
@@ -157,7 +173,7 @@ test('A1 全新安装：6 张表齐全，版本号 2', () => {
     'time_slots',
     'timetables',
   ]);
-  assert.equal(DB_VERSION, 2);
+  assert.equal(DB_VERSION, 3);
   db.close();
 });
 
@@ -298,6 +314,8 @@ test('B3 迁移后 schema 与全新安装**逐列一致**（类型/非空/默认
   const migrated = openDb();
   buildV1WithData(migrated);
   runSteps(migrated, migrateV1toV2({ name: '2026 秋', startDateEpochDay: 19999, totalWeeks: 18 }, 5000));
+  // v2→v3 也要跑：否则'迁移后的库'比'全新安装'少一列，这个用例就失去意义了
+  runSteps(migrated, migrateV2toV3());
 
   const fresh = openDb();
   freshInstall(fresh, 1000, 20000);
@@ -514,4 +532,51 @@ test('D5 启动选表：上次那张已被删除 → 退回主课表 → 再退�
 
 test('D6 启动选表：一张都没有 → null（调用方补建默认课表）', () => {
   assert.equal(pickStartupTimetable([], 7, true), null);
+});
+
+test('B6 迁移 v2→v3：给每条时段加 location，并从课程的教室回填', () => {
+  const db = openDb();
+  // 造一个 v2 库（没有 location 列）
+  execAll(db, V2_SCHEMA);
+  db.prepare(
+    'INSERT INTO timetables (id, name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
+      'VALUES (1, ?, ?, ?, 1, ?)'
+  ).run('我的课表', 20000, 20, 1000);
+  db.prepare(
+    'INSERT INTO courses (id, timetableId, name, teacher, location, color, category, note) ' +
+      'VALUES (1, 1, ?, ?, ?, 0, ?, ?)'
+  ).run('数字电子技术基础', '孙红霞', '思源楼-301', '', '');
+  db.prepare(
+    'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
+      'VALUES (1, 1, 9, 10, 65535)'
+  ).run();
+  db.exec('PRAGMA user_version = 2');
+
+  runSteps(db, migrateV2toV3(columnsOf(db)));
+  db.exec('PRAGMA user_version = 3');
+
+  const version = (db.prepare('PRAGMA user_version').get() as Record<string, unknown>).user_version;
+  assert.equal(Number(version), 3);
+  const row = db
+    .prepare('SELECT location FROM course_schedules WHERE courseId = 1')
+    .get() as Record<string, string> | undefined;
+  assert.equal(row?.location, '思源楼-301', '旧数据的教室要回填到时段上');
+  // 重跑安全
+  runSteps(db, migrateV2toV3(columnsOf(db)));
+  assert.equal(count(db, 'SELECT COUNT(*) AS c FROM course_schedules'), 1);
+  db.close();
+});
+
+test('B7 迁移 v2→v3：与全新安装的 schema 仍然逐列一致', () => {
+  const db = openDb();
+  execAll(db, V2_SCHEMA);
+  db.exec('PRAGMA user_version = 2');
+  runSteps(db, migrateV2toV3(columnsOf(db)));
+
+  const fresh = openDb();
+  freshInstall(fresh, 1000, 20000);
+  assert.deepEqual(tableInfo(db, 'course_schedules'), tableInfo(fresh, 'course_schedules'));
+  assert.deepEqual(indexNames(db, 'course_schedules'), indexNames(fresh, 'course_schedules'));
+  db.close();
+  fresh.close();
 });
