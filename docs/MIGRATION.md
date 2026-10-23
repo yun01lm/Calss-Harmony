@@ -1,4 +1,4 @@
-# 与 Android 版的模块对照
+﻿# 与 Android 版的模块对照
 
 行为规格以 [Calss-Android](https://github.com/yun01lm/Calss-Android) 为准；任何差异记录到 `docs/COMPAT.md`。
 
@@ -22,8 +22,8 @@
 | `ui/home/HomeScreen.kt` | `pages/Index.ets` | 🔄 周视图 + 翻周 + 详情卡 + 导入入口完成；新建/编辑课程待做 |
 | `ui/home/ItemDetailDialog.kt` | `pages/Index.ets` 底部详情卡 | 🔄 只读展示完成，编辑待做 |
 | `ui/pdfimport/*` | `pages/Index.ets` 导入面板 + `platform/PdfFile.ts` + `platform/PdfJs.ts` | ✅ 选文件 → 预览 → 覆盖/合并/新建课表；**真实课表认得 24 门**（存证 27/28） |
-| `ui/timetableimport/*` | `view/timetableimport/*` + `platform/Ocr.ts` | ⬜ 模拟器没有 OCR 后端，需真机 |
-| `ui/timetable/*`（多课表） | `view/timetable/*` | 🔄 数据层已就绪（建/删/切换/主课表），界面待做 |
+| `ui/timetableimport/*` + `ui/timetable/TimetableEditor`（作息） | `pages/Index.ets` 的作息页 | ✅ 改时间/加一节/删一节/恢复默认（存证 29）；OCR 部分仍需真机 |
+| `ui/timetable/*`（多课表） | `pages/Index.ets` 的课表页 | ✅ 列表/切换/新建/重命名/设为主课表/删除确认/启动开关（存证 30、31） |
 | SAF（`OpenDocument`） | `@ohos.file.picker`（`DocumentViewPicker`） | ✅ 实机验证（导入时弹出系统选择器） |
 | Room | `relationalStore` | ✅ 已验证（事务执行 DDL/DML、`user_version` 读写、`sqlite_master` 查询） |
 | pdfbox-android | **ArkWeb + pdf.js**（含内联中文 CMap） | ✅ 真实文件跑通；PDF Kit 因无坐标被否 |

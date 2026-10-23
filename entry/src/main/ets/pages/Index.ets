@@ -1,9 +1,10 @@
-﻿import { common } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import {
   GridFormatParser,
   ListFormatParser,
+  Minutes,
   PdfRunText,
   WeekCalculator,
   WeekItems,
@@ -17,7 +18,7 @@ import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PayloadSink, PdfBridge, PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
 import { ScheduleStore } from '../data/ScheduleStore';
-import { Course, CourseSchedule, CourseWithSchedules, maskToDb, Snapshot, TimeSlot } from '../data/models';
+import { Course, CourseSchedule, CourseWithSchedules, maskToDb, Snapshot, TimeSlot, Timetable } from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
 
 /**
@@ -88,12 +89,25 @@ struct Index {
   /** pdf.js 这次回传是给"spike"还是给"导入"用的 */
   private pdfPurpose: string = 'spike';
   private importCourses: CourseWithSchedules[] = [];
+
+  // ---------------- 二级页面（作息 / 课表）
+  /** 'home' | 'slots' | 'timetables' —— 用状态切屏而不是路由：只有两个页面，省掉一层导航栈 */
+  @State screen: string = 'home';
+  @State timetables: Timetable[] = [];
+  @State slotsBusy: boolean = false;
+  /** '' | 'create' | 'rename'：正在弹输入框 */
+  @State textDialog: string = '';
+  @State textValue: string = '';
+  @State openPrimaryOnLaunch: boolean = false;
   private webController: webview.WebviewController = new webview.WebviewController();
   private pdfSink: PayloadSink | null = null;
 
   /** 程序化翻页中。不是 @State：它不影响渲染，只用来压住 onChange */
   private autoScrolling: boolean = false;
   private controller: SwiperController = new SwiperController();
+  /** 当前 store / 库句柄：二级页面（作息、课表）直接用，不再重复 open */
+  private store: ScheduleStore | null = null;
+  private db: Rdb | null = null;
 
   aboutToAppear(): void {
     // pdf.js 的回调经静态 sink 转进来（JS 调用时代理对象的 this 不可靠）
@@ -112,38 +126,44 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       Column() {
-        this.headerBar()
-        if (this.loading) {
-          Column({ space: 8 }) {
-            LoadingProgress().width(36).height(36).color('#E07A5F')
-            Text('正在读取课表…').fontSize(12).fontColor('#7A6E66')
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .justifyContent(FlexAlign.Center)
-        } else if (this.errorLine.length > 0) {
-          Column({ space: 8 }) {
-            Text('打开课表失败').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#C62828')
-            Text(this.errorLine).fontSize(12).fontColor('#7A6E66').textAlign(TextAlign.Center)
-            Button('重试')
-              .fontSize(13)
-              .backgroundColor('#E07A5F')
-              .onClick(() => {
-                this.errorLine = '';
-                this.loading = true;
-                this.load();
-              })
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .padding(24)
-          .justifyContent(FlexAlign.Center)
+        if (this.screen === 'slots') {
+          this.slotsScreen()
+        } else if (this.screen === 'timetables') {
+          this.timetablesScreen()
         } else {
-          this.weekBar()
-          this.pager()
-        }
-        if (this.showDev) {
-          this.devPanel()
+          this.headerBar()
+          if (this.loading) {
+            Column({ space: 8 }) {
+              LoadingProgress().width(36).height(36).color('#E07A5F')
+              Text('正在读取课表…').fontSize(12).fontColor('#7A6E66')
+            }
+            .layoutWeight(1)
+            .width('100%')
+            .justifyContent(FlexAlign.Center)
+          } else if (this.errorLine.length > 0) {
+            Column({ space: 8 }) {
+              Text('打开课表失败').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#C62828')
+              Text(this.errorLine).fontSize(12).fontColor('#7A6E66').textAlign(TextAlign.Center)
+              Button('重试')
+                .fontSize(13)
+                .backgroundColor('#E07A5F')
+                .onClick(() => {
+                  this.errorLine = '';
+                  this.loading = true;
+                  this.load();
+                })
+            }
+            .layoutWeight(1)
+            .width('100%')
+            .padding(24)
+            .justifyContent(FlexAlign.Center)
+          } else {
+            this.weekBar()
+            this.pager()
+          }
+          if (this.showDev) {
+            this.devPanel()
+          }
         }
       }
       .width('100%')
@@ -156,6 +176,10 @@ struct Index {
 
       if (this.importOpen) {
         this.importSheet()
+      }
+
+      if (this.textDialog.length > 0) {
+        this.textDialogCard()
       }
 
       // pdf.js 容器：1x1 且透明。它只负责解析 PDF，界面不展示（见 platform/PdfJs.ts）
@@ -197,6 +221,26 @@ struct Index {
           .fontColor('#A89C93')
           .margin({ right: 8 })
       }
+
+      Button('课表')
+        .fontSize(12)
+        .height(30)
+        .backgroundColor('#F3E6DC')
+        .fontColor('#B4664C')
+        .margin({ right: 6 })
+        .onClick(() => {
+          this.openTimetables();
+        })
+
+      Button('作息')
+        .fontSize(12)
+        .height(30)
+        .backgroundColor('#F3E6DC')
+        .fontColor('#B4664C')
+        .margin({ right: 6 })
+        .onClick(() => {
+          this.screen = 'slots';
+        })
 
       Button(this.importBusy ? '导入中…' : '导入')
         .fontSize(12)
@@ -350,6 +394,297 @@ struct Index {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+  }
+
+  // ---------------------------------------------------------------- 作息页
+
+  @Builder
+  slotsScreen() {
+    Column({ space: 8 }) {
+      this.screenHeader('作息时间')
+
+      Text('课表格子里的节次时间从这张表来。改完立即生效，课程数据不动。')
+        .fontSize(10)
+        .fontColor('#A89C93')
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+
+      List({ space: 6 }) {
+        ForEach(this.slots(), (slot: TimeSlot) => {
+          ListItem() {
+            Row({ space: 8 }) {
+              Text(`第 ${slot.periodIndex} 节`)
+                .fontSize(12)
+                .fontWeight(FontWeight.Medium)
+                .fontColor('#3B3430')
+                .width(64)
+
+              Text(Minutes.format(slot.startMinute))
+                .fontSize(14)
+                .fontColor('#E07A5F')
+                .width(56)
+                .textAlign(TextAlign.Center)
+                .onClick(() => {
+                  this.pickSlotTime(slot, true);
+                })
+
+              Text('—').fontSize(12).fontColor('#B3A79E')
+
+              Text(Minutes.format(slot.endMinute))
+                .fontSize(14)
+                .fontColor('#E07A5F')
+                .width(56)
+                .textAlign(TextAlign.Center)
+                .onClick(() => {
+                  this.pickSlotTime(slot, false);
+                })
+
+              Text(`${(slot.endMinute - slot.startMinute)} 分`)
+                .fontSize(10)
+                .fontColor('#A89C93')
+                .layoutWeight(1)
+
+              Text('删除')
+                .fontSize(11)
+                .fontColor('#C62828')
+                .onClick(() => {
+                  this.deleteSlot(slot);
+                })
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor('#FFFFFF')
+            .borderRadius(8)
+            }
+          }, (slot: TimeSlot) => 'slot' + slot.id + '-' + slot.startMinute + '-' + slot.endMinute)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+      .scrollBar(BarState.Off)
+
+      Row({ space: 8 }) {
+        Button('加一节')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#E07A5F')
+          .enabled(!this.slotsBusy)
+          .onClick(() => {
+            this.addSlot();
+          })
+        Button('恢复默认 12 节')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#BDB3AB')
+          .enabled(!this.slotsBusy)
+          .onClick(() => {
+            this.resetSlots();
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, bottom: 12 })
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  // ---------------------------------------------------------------- 课表页
+
+  @Builder
+  timetablesScreen() {
+    Column({ space: 8 }) {
+      this.screenHeader('课表')
+
+      List({ space: 6 }) {
+        ForEach(this.timetables, (t: Timetable) => {
+          ListItem() {
+            Row({ space: 8 }) {
+              Column({ space: 2 }) {
+                Row({ space: 6 }) {
+                  Text(t.name)
+                    .fontSize(14)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor('#3B3430')
+                  if (t.isPrimary) {
+                    Text('主')
+                      .fontSize(9)
+                      .fontColor('#FFFFFF')
+                      .backgroundColor('#E07A5F')
+                      .borderRadius(4)
+                      .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+                  }
+                  if (t.id === this.storeCurrentId()) {
+                    Text('当前')
+                      .fontSize(9)
+                      .fontColor('#FFFFFF')
+                      .backgroundColor('#7FA98B')
+                      .borderRadius(4)
+                      .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+                  }
+                }
+                Text(`${t.totalWeeks} 周 · 开学 ${WeekCalculator.isoDate(t.startDateEpochDay)}`)
+                  .fontSize(10)
+                  .fontColor('#A89C93')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              if (t.id !== this.storeCurrentId()) {
+                Text('切换')
+                  .fontSize(12)
+                  .fontColor('#B4664C')
+                  .onClick(() => {
+                    this.switchTimetable(t.id);
+                  })
+              }
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 10, bottom: 10 })
+            .backgroundColor('#FFFFFF')
+            .borderRadius(8)
+            .onClick(() => {
+              this.switchTimetable(t.id);
+            })
+            }
+          }, (t: Timetable) => 'tt' + t.id + '-' + t.name + '-' + t.isPrimary)
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+      .scrollBar(BarState.Off)
+
+      Row() {
+        Text('启动时总是打开主课表')
+          .fontSize(12)
+          .fontColor('#7A6E66')
+          .layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.openPrimaryOnLaunch })
+          .selectedColor('#E07A5F')
+          .onChange((isOn: boolean) => {
+            this.setOpenPrimary(isOn);
+          })
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 6, bottom: 6 })
+
+      Row({ space: 8 }) {
+        Button('新建课表')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#E07A5F')
+          .onClick(() => {
+            this.textDialog = 'create';
+            this.textValue = '';
+          })
+        Button('重命名')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#7FA98B')
+          .onClick(() => {
+            this.textDialog = 'rename';
+            this.textValue = this.currentTimetableName();
+          })
+        Button('设为主课表')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#5B7C99')
+          .onClick(() => {
+            this.markPrimary();
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+
+      Button('删除当前课表')
+        .fontSize(12)
+        .height(32)
+        .width('100%')
+        .backgroundColor('#F7E7E4')
+        .fontColor('#C62828')
+        .margin({ left: 12, right: 12, bottom: 12 })
+        .onClick(() => {
+          this.confirmDeleteTimetable();
+        })
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 新建/重命名的输入框（用一个居中的卡片，避免再引入弹窗 API） */
+  @Builder
+  textDialogCard() {
+    Column() {
+      Column({ space: 10 }) {
+        Text(this.textDialog === 'create' ? '新建课表' : '重命名课表')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .width('100%')
+        TextInput({ text: this.textValue, placeholder: '课表名字' })
+          .fontSize(14)
+          .backgroundColor('#F5EFEA')
+          .onChange((value: string) => {
+            this.textValue = value;
+          })
+        Row({ space: 8 }) {
+          Button('取消')
+            .fontSize(12)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#EFE6DF')
+            .fontColor('#7A6E66')
+            .onClick(() => {
+              this.textDialog = '';
+            })
+          Button('确定')
+            .fontSize(12)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#E07A5F')
+            .onClick(() => {
+              this.confirmTextDialog();
+            })
+        }
+        .width('100%')
+      }
+      .width('86%')
+      .padding(16)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
+  }
+
+  /** 二级页面的统一顶栏：返回 + 标题 */  @Builder
+  screenHeader(title: string) {
+    Row() {
+      Text('‹ 返回')
+        .fontSize(13)
+        .fontColor('#B4664C')
+        .onClick(() => {
+          this.screen = 'home';
+          this.textDialog = '';
+        })
+      Text(title)
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#3B3430')
+        .layoutWeight(1)
+        .textAlign(TextAlign.Center)
+      Text(' ')
+        .fontSize(13)
+        .width(48)
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 8 })
   }
 
   // ---------------------------------------------------------------- 导入面板
@@ -888,6 +1223,277 @@ struct Index {
     this.pdfPurpose = 'spike';
   }
 
+  // ---------------------------------------------------------------- 作息/课表：动作
+
+  onBackPress(): boolean {
+    if (this.screen !== 'home') {
+      this.screen = 'home';
+      this.textDialog = '';
+      return true;
+    }
+    if (this.textDialog.length > 0) {
+      this.textDialog = '';
+      return true;
+    }
+    return false;
+  }
+
+  private async openTimetables(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      this.timetables = await store.allTimetables();
+      this.openPrimaryOnLaunch = await this.readOpenPrimary(store);
+      this.screen = 'timetables';
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '读取课表列表失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  /** "启动时总是打开主课表"开关的当前值（偏好表里是 '1'/'0'） */
+  private async readOpenPrimary(store: ScheduleStore): Promise<boolean> {
+    const db: Rdb | null = this.db;
+    if (db === null) {
+      return false;
+    }
+    const rows = await db.query("SELECT value FROM preferences WHERE key = 'open_primary_on_launch'");
+    return rows.length > 0 && rows[0].text('value') === '1';
+  }
+
+  private storeCurrentId(): number {
+    const s: ScheduleStore | null = this.store;
+    return s === null ? 0 : s.currentId;
+  }
+
+  private currentTimetableName(): string {
+    for (const t of this.timetables) {
+      if (t.id === this.storeCurrentId()) {
+        return t.name;
+      }
+    }
+    const snap: Snapshot | null = this.snapshot;
+    return snap === null || snap.timetable === null ? '' : snap.timetable.name;
+  }
+
+  private async switchTimetable(id: number): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      await store.switchTo(id);
+      this.screen = 'home';
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '切换失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  private async markPrimary(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      await store.setPrimary(store.currentId);
+      this.timetables = await store.allTimetables();
+      promptAction.showToast({ message: '已设为主课表', duration: 1500 });
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '设置失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  private async setOpenPrimary(isOn: boolean): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      await store.setOpenPrimaryOnLaunch(isOn);
+      this.openPrimaryOnLaunch = isOn;
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  private confirmDeleteTimetable(): void {
+    const name: string = this.currentTimetableName();
+    this.getUIContext().showAlertDialog({
+      title: '删除课表',
+      message: `确定删除《${name}》？它的课程、作息、自定义安排都会一起删掉，且不能撤销。`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        },
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: '#C62828',
+        action: () => {
+          this.deleteCurrentTimetable();
+        },
+      },
+    });
+  }
+
+  private async deleteCurrentTimetable(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      const id: number = store.currentId;
+      await store.deleteTimetable(id, Date.now());
+      this.screen = 'home';
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '删除失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  private async confirmTextDialog(): Promise<void> {
+    const name: string = this.textValue.trim();
+    const mode: string = this.textDialog;
+    if (name.length === 0) {
+      promptAction.showToast({ message: '名字不能为空', duration: 1500 });
+      return;
+    }
+    try {
+      const store: ScheduleStore = await this.openStore();
+      if (mode === 'create') {
+        const snap: Snapshot = await store.snapshot();
+        const start: number = snap.timetable === null
+          ? WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
+          : snap.timetable.startDateEpochDay;
+        const weeks: number = snap.timetable === null ? 20 : snap.timetable.totalWeeks;
+        await store.createTimetable(name, start, weeks, store.currentId, Date.now());
+        this.screen = 'home';
+        this.textDialog = '';
+        await this.load();
+        return;
+      }
+      await store.renameTimetable(store.currentId, name);
+      this.timetables = await store.allTimetables();
+      this.textDialog = '';
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+    }
+  }
+
+  /** 点时间 → 系统时间选择器 → 写回这一节 */
+  private pickSlotTime(slot: TimeSlot, isStart: boolean): void {
+    const current: number = isStart ? slot.startMinute : slot.endMinute;
+    const now: Date = new Date();
+    const selected: Date = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
+      Math.floor(current / 60), current % 60, 0);
+    this.getUIContext().showTimePickerDialog({
+      selected: selected,
+      useMilitaryTime: true,
+      onAccept: (value: TimePickerResult) => {
+        const minute: number = value.hour * 60 + value.minute;
+        this.applySlotTime(slot, isStart ? minute : slot.startMinute, isStart ? slot.endMinute : minute);
+      },
+    });
+  }
+
+  private async applySlotTime(slot: TimeSlot, startMinute: number, endMinute: number): Promise<void> {
+    if (endMinute <= startMinute) {
+      promptAction.showToast({ message: '结束时间要晚于开始时间', duration: 2000 });
+      return;
+    }
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      await store.saveSlot({
+        id: slot.id,
+        timetableId: slot.timetableId,
+        periodIndex: slot.periodIndex,
+        label: slot.label,
+        startMinute: startMinute,
+        endMinute: endMinute,
+      });
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+    }
+    this.slotsBusy = false;
+  }
+
+  /** 加一节：接在最后一节后面（隔 5 分钟），默认 45 分钟 */
+  private async addSlot(): Promise<void> {
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      const slots: TimeSlot[] = await store.readSlotsOf(store.currentId);
+      let lastEnd = 8 * 60;
+      let maxPeriod = 0;
+      for (const s of slots) {
+        if (s.endMinute > lastEnd) {
+          lastEnd = s.endMinute;
+        }
+        if (s.periodIndex > maxPeriod) {
+          maxPeriod = s.periodIndex;
+        }
+      }
+      const start: number = Math.min(lastEnd + 5, 23 * 60);
+      const end: number = Math.min(start + 45, 23 * 60 + 59);
+      await store.saveSlot({
+        id: 0,
+        timetableId: 0,
+        periodIndex: maxPeriod + 1,
+        label: '',
+        startMinute: start,
+        endMinute: end,
+      });
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '加一节失败：' + err.message, duration: 2000 });
+    }
+    this.slotsBusy = false;
+  }
+
+  /** 删除后**重新编号**，否则节次会出现空洞（网格按节次画行） */
+  private async deleteSlot(slot: TimeSlot): Promise<void> {
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      const slots: TimeSlot[] = await store.readSlotsOf(store.currentId);
+      const kept: TimeSlot[] = [];
+      for (const s of slots) {
+        if (s.id !== slot.id) {
+          kept.push(s);
+        }
+      }
+      const renumbered: TimeSlot[] = [];
+      let index = 1;
+      for (const s of kept) {
+        renumbered.push({
+          id: s.id,
+          timetableId: s.timetableId,
+          periodIndex: index,
+          label: s.label,
+          startMinute: s.startMinute,
+          endMinute: s.endMinute,
+        });
+        index++;
+      }
+      await store.replaceSlots(renumbered);
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '删除失败：' + err.message, duration: 2000 });
+    }
+    this.slotsBusy = false;
+  }
+
+  private async resetSlots(): Promise<void> {
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      await store.resetSlots();
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      promptAction.showToast({ message: '恢复失败：' + err.message, duration: 2000 });
+    }
+    this.slotsBusy = false;
+  }
+
   // ---------------------------------------------------------------- 交互
 
   private goToWeek(week: number): void {
@@ -970,6 +1576,8 @@ struct Index {
         WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
       );
       const store = new ScheduleStore(db);
+      this.store = store;
+      this.db = db;
       await store.ensureCurrentTimetable(Date.now());
       const snap: Snapshot = await store.snapshot();
       this.snapshot = snap;
@@ -1270,5 +1878,6 @@ struct Index {
     return out;
   }
 }
+
 
 
