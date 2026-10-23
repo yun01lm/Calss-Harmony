@@ -109,6 +109,18 @@ test('looksLikeTail：详情续行的六种特征', () => {
   assert.equal(GridFormatParser.looksLikeTail('智慧教室'), false, '普通地点名不算续行');
 });
 
+test('looksLikeTail：被折行截断的纯数值尾巴也算续行（真实课表实测）', () => {
+  // 一格的信息块最后一行是 `…/总学时:16/学分`，学分值被折到下一行变成孤立的 `:1.0`
+  assert.equal(GridFormatParser.looksLikeTail(':1.0'), true);
+  assert.equal(GridFormatParser.looksLikeTail('分:4.0'), true);
+  assert.equal(GridFormatParser.looksLikeTail('学分:3.0'), true);
+  assert.equal(GridFormatParser.looksLikeTail(':80'), true);
+  // 不能误伤正常短课名
+  assert.equal(GridFormatParser.looksLikeTail('体育Ⅲ-网球'), false);
+  assert.equal(GridFormatParser.looksLikeTail('美育教育'), false);
+  assert.equal(GridFormatParser.looksLikeTail('3D打印'), false);
+});
+
 // ---------------------------------------------------------------- 网格式
 test('网格式：单列单课，节次/周次/地点/教师/类别全部正确', () => {
   const runs: PdfTextRun[] = gridHeaders();
@@ -298,4 +310,37 @@ test('assignGroups：合并单元格叠多门课时按连续分组，不会整�
   const labels = [412, 525];
   const g = ListFormatParser.assignGroups(centers, labels);
   assert.deepEqual(g, [0, 0, 0, 1], '前三门必须都归周四，即使第一门离周五更远/更近');
+});
+
+// ---------------------------------------------------------------- 真实课表的"学分折行"
+
+test('cleanName：剥掉串进来的学分尾巴（真实课表 22 门里 7 门被污染过）', () => {
+  assert.equal(ParsingUtils.cleanName(':1.0算法分析与设计')[0], '算法分析与设计');
+  assert.equal(ParsingUtils.cleanName('分:4.0数字电子技术基础')[0], '数字电子技术基础');
+  assert.equal(ParsingUtils.cleanName('学分:3.0大学物理Ⅱ（B）')[0], '大学物理Ⅱ（B）');
+  // 正常课名不能被误伤：冒号后面不是数字的，一个字都不动
+  assert.equal(ParsingUtils.cleanName('英语:听力')[0], '英语:听力');
+  assert.equal(ParsingUtils.cleanName('体育Ⅲ-网球')[0], '体育Ⅲ-网球');
+  assert.equal(ParsingUtils.cleanName('3D打印')[0], '3D打印');
+  assert.equal(ParsingUtils.cleanName('C语言程序设计')[0], 'C语言程序设计');
+});
+
+test('网格式：学分值折到下一行（孤立 :1.0）不会变成下一门课的课名前缀', () => {
+  const runs: PdfTextRun[] = gridHeaders();
+  // 第一门课：详情块以 `…/学分` 结尾，学分值 `:1.0` 折到下一行
+  runs.push(run('数字电子技术基础实验☆', 150, 150));
+  runs.push(run('(1-2节)7-14周/第一实验楼-', 150, 164));
+  runs.push(run('A302-303数字电子技术实验室-1/孙红霞', 150, 178));
+  runs.push(run(';计科2510班/考查/无/实验:16/周学时:2/总学时:16/学分', 150, 192));
+  runs.push(run(':1.0', 150, 206));
+  // 第二门课
+  runs.push(run('算法分析与设计★', 150, 220));
+  runs.push(run('(3-4节)1-16周/思源楼-404/魏树森', 150, 234));
+
+  const r = GridFormatParser.parse(runs);
+  assert.equal(r.courses.length, 2, '不能因为一个 :1.0 就多出一门"课"');
+  assert.equal(r.courses[0].name, '数字电子技术基础实验');
+  assert.equal(r.courses[1].name, '算法分析与设计', '课名前不能带 :1.0');
+  assert.equal(r.courses[1].schedules[0].startPeriod, 3);
+  assert.equal(r.courses[1].schedules[0].endPeriod, 4);
 });

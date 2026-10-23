@@ -88,6 +88,10 @@ export class ParsingUtils {
   /**
    * 去掉类别符号 → (纯课程名, 类别)。
    * 类别取**第一个**出现的符号（一门课一般只有一个），其余符号直接剔除。
+   *
+   * 另外剥掉一种"串行"残留：上一格的学分字段折行后（`:1.0`、`分:4.0`、`学分:3.0`）
+   * 会被当成课名首行拼到这里。只剥"可选的学分/学时字样 + 冒号 + 数字"这种明确形态，
+   * 正常课名（`体育Ⅲ-网球`、`3D打印`）没有冒号，不会被误伤。
    */
   static cleanName(raw: string): [string, string] {
     let category = '';
@@ -101,7 +105,13 @@ export class ParsingUtils {
         category = mapped;
       }
     }
-    return [trimChars(out.trim(), ',，;；·-'), category];
+    let name = trimChars(out.trim(), ',，;；·-');
+    const meta = /^(?:学分|学时|周学时|总学时|理论|实验|分|时)?[:：]\s*[\d.]+\s*/.exec(name);
+    // `meta[0].length < name.length`：别把整串都剥光（万一课名真的就叫 ":1.0"）
+    if (meta !== null && meta[0].length < name.length) {
+      name = name.substring(meta[0].length);
+    }
+    return [name, category];
   }
 
   /**

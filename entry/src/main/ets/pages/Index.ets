@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { fileIo } from '@kit.CoreFileKit';
 import BuildProfile from 'BuildProfile';
 import { webview } from '@kit.ArkWeb';
 import {
@@ -1263,6 +1264,25 @@ struct Index {
     });
   }
 
+  /**
+   * 开发期：把 pdf.js 的回传原文写进应用沙箱（`filesDir/pdf-runs.txt`）。
+   * 只用于排查真实课表的解析问题，release 包里不会调用（`BuildProfile.DEBUG`）。
+   */
+  private static dumpRunsForDebug(ctx: common.UIAbilityContext, payload: string): void {
+    try {
+      const path: string = ctx.filesDir + '/pdf-runs.txt';
+      const file = fileIo.openSync(
+        path,
+        fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC
+      );
+      fileIo.writeSync(file.fd, payload);
+      fileIo.closeSync(file);
+      console.info('[Calss] pdf-runs dumped: ' + path + ' (' + payload.length + ' chars)');
+    } catch (e) {
+      console.error('[Calss] dump pdf-runs failed: ' + (e as Error).message);
+    }
+  }
+
   /** pdf.js 回传（在 UI 线程回调）。按 `pdfPurpose` 分流：spike 展示 / 导入解析 */
   private onPdfPayload(payload: string): void {
     const result = PdfRunText.parse(payload);
@@ -1386,6 +1406,11 @@ struct Index {
       const payload: string = await this.pollPdfResult(60000);
       if (payload.length === 0) {
         throw new Error('解析超时（60 秒内没有结果）');
+      }
+      // 开发期：把 pdf.js 的原样回传存进沙箱，`hdc file recv` 拉回桌面就能离线复现
+      // （真实课表版式千奇百怪，只靠"装到设备看预览前 6 行"复盘太慢）
+      if (BuildProfile.DEBUG) {
+        Index.dumpRunsForDebug(ctx as common.UIAbilityContext, payload);
       }
       this.onPdfPayload(payload);
     } catch (e) {
