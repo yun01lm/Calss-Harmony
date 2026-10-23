@@ -19,16 +19,16 @@
 | `HomeViewModel.colorFor` + `PALETTE` | `logic/Colors.ts` | ✅ 3 断言（含 Kotlin `hashCode` 逐值对齐） |
 | `HomeScreen` 的「打开即当前周」抑制规则 | `logic/WeekSelection.ts` | ✅ 12 断言（8 个时序复演） |
 | `ui/home/WeekGrid.kt` | `view/WeekGrid.ets` | ✅ 实机（见下方存证 15–20） |
-| `ui/home/HomeScreen.kt` | `pages/Index.ets` | 🔄 周视图 + 翻周 + 详情卡完成；新建/编辑课程待阶段 3 |
-| `ui/home/ItemDetailDialog.kt` | `pages/Index.ets` 底部详情卡 | 🔄 只读展示完成，编辑待阶段 3 |
-| `ui/pdfimport/*` | `view/import/*` + `platform/Pdf.ts` | ⬜ |
-| `ui/timetableimport/*` | `view/timetableimport/*` + `platform/Ocr.ts` | ⬜ |
-| `ui/timetable/*`（多课表） | `view/timetable/*` | ⬜ |
-| SAF（`OpenDocument`） | `@ohos.file.picker` | ⬜ |
+| `ui/home/HomeScreen.kt` | `pages/Index.ets` | 🔄 周视图 + 翻周 + 详情卡 + 导入入口完成；新建/编辑课程待做 |
+| `ui/home/ItemDetailDialog.kt` | `pages/Index.ets` 底部详情卡 | 🔄 只读展示完成，编辑待做 |
+| `ui/pdfimport/*` | `pages/Index.ets` 导入面板 + `platform/PdfFile.ts` + `platform/PdfJs.ts` | ✅ 选文件 → 预览 → 覆盖/合并/新建课表；**真实课表认得 24 门**（存证 27/28） |
+| `ui/timetableimport/*` | `view/timetableimport/*` + `platform/Ocr.ts` | ⬜ 模拟器没有 OCR 后端，需真机 |
+| `ui/timetable/*`（多课表） | `view/timetable/*` | 🔄 数据层已就绪（建/删/切换/主课表），界面待做 |
+| SAF（`OpenDocument`） | `@ohos.file.picker`（`DocumentViewPicker`） | ✅ 实机验证（导入时弹出系统选择器） |
 | Room | `relationalStore` | ✅ 已验证（事务执行 DDL/DML、`user_version` 读写、`sqlite_master` 查询） |
-| pdfbox-android | PDF Kit `getTextContent()` / ArkWeb + pdf.js | ⬜ 待 spike |
-| ML Kit 中文 OCR | Core Vision Kit `textRecognition` | ⬜ 待 spike |
-| `tools/verify_*.{py,ps1}`（7 套） | `tests/*.test.ts`（Node 内置 test） | 🔄 12 套 / 188 断言已移植 |
+| pdfbox-android | **ArkWeb + pdf.js**（含内联中文 CMap） | ✅ 真实文件跑通；PDF Kit 因无坐标被否 |
+| ML Kit 中文 OCR | Core Vision Kit `textRecognition` | ⚠️ 代码可写，但模拟器无后端（1001400001），需真机 |
+| `tools/verify_*.{py,ps1}`（7 套） | `tests/*.test.ts`（Node 内置 test） | 🔄 13 套 / 199 断言已移植 |
 
 ## 设备侧验证（模拟器，HarmonyOS 7.0 / API 26）
 

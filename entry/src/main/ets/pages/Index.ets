@@ -10,13 +10,14 @@ import {
   WeekMasks,
   WeekSelection,
 } from '../logic';
-import { type CourseLike, type EventLike, type ParseResult, type ScheduleLike, type WeekItem } from '../logic';
+import { type CourseLike, type EventLike, type ParseResult, type PdfExtractResult, type ScheduleLike, type WeekItem } from '../logic';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PayloadSink, PdfBridge, PdfJs } from '../platform/PdfJs';
+import { PdfFile, PickedPdf } from '../platform/PdfFile';
 import { ScheduleStore } from '../data/ScheduleStore';
-import { Course, CourseSchedule, maskToDb, Snapshot, TimeSlot } from '../data/models';
+import { Course, CourseSchedule, CourseWithSchedules, maskToDb, Snapshot, TimeSlot } from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
 
 /**
@@ -73,6 +74,20 @@ struct Index {
   @State pdfRunning: boolean = false;
   @State webReady: boolean = false;
   @State webLog: string[] = [];
+
+  // ---------------- 导入课表（PDF）
+  @State importOpen: boolean = false;
+  @State importBusy: boolean = false;
+  @State importStage: string = '';
+  @State importFileName: string = '';
+  @State importFormat: string = '';
+  @State importCount: number = 0;
+  @State importPreview: string[] = [];
+  @State importWarnings: string[] = [];
+  @State importError: string = '';
+  /** pdf.js 这次回传是给"spike"还是给"导入"用的 */
+  private pdfPurpose: string = 'spike';
+  private importCourses: CourseWithSchedules[] = [];
   private webController: webview.WebviewController = new webview.WebviewController();
   private pdfSink: PayloadSink | null = null;
 
@@ -139,6 +154,10 @@ struct Index {
         this.detailCard()
       }
 
+      if (this.importOpen) {
+        this.importSheet()
+      }
+
       // pdf.js 容器：1x1 且透明。它只负责解析 PDF，界面不展示（见 platform/PdfJs.ts）
       this.hiddenWeb()
     }
@@ -176,7 +195,18 @@ struct Index {
         Text('学期已结束')
           .fontSize(11)
           .fontColor('#A89C93')
+          .margin({ right: 8 })
       }
+
+      Button(this.importBusy ? '导入中…' : '导入')
+        .fontSize(12)
+        .height(30)
+        .backgroundColor('#F3E6DC')
+        .fontColor('#B4664C')
+        .enabled(!this.importBusy)
+        .onClick(() => {
+          this.startImport();
+        })
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 12, bottom: 6 })
@@ -322,8 +352,113 @@ struct Index {
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
   }
 
-  // ---------------------------------------------------------------- 开发者入口
+  // ---------------------------------------------------------------- 导入面板
 
+  /**
+   * 导入面板：解析结果**先给人看**，再让人选落库方式。
+   *
+   * 为什么不做成"选完文件直接写库"：解析是有误差的（真实 OCR 会把连字符读成冒号、
+   * 少读一节课的节次号）。直接覆盖等于把用户原来正确的课表换成一份可能缺课的，
+   * 而且没法撤销。所以这里一定先出预览 + 警告，写入必须由用户点。
+   */
+  @Builder
+  importSheet() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('导入课表')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .layoutWeight(1)
+        Text(this.importBusy ? '处理中…' : '取消')
+          .fontSize(12)
+          .fontColor(this.importBusy ? '#BDB3AB' : '#E07A5F')
+          .onClick(() => {
+            this.closeImport();
+          })
+      }
+      .width('100%')
+
+      Text(this.importFileName)
+        .fontSize(11)
+        .fontColor('#7A6E66')
+        .width('100%')
+
+      if (this.importError.length > 0) {
+        Text(this.importError)
+          .fontSize(12)
+          .fontColor('#C62828')
+          .width('100%')
+      }
+
+      if (this.importBusy) {
+        Row({ space: 8 }) {
+          LoadingProgress().width(18).height(18).color('#E07A5F')
+          Text(this.importStage)
+            .fontSize(12)
+            .fontColor('#7A6E66')
+        }
+        .width('100%')
+      } else if (this.importCount > 0) {
+        Text(`${this.importFormat} · 认出 ${this.importCount} 门课`)
+          .fontSize(12)
+          .fontColor('#2E7D32')
+          .width('100%')
+
+        ForEach(this.importPreview, (line: string) => {
+          Text(line)
+            .fontSize(11)
+            .fontColor('#7A6E66')
+            .width('100%')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }, (line: string, index: number) => 'imp' + index)
+
+        if (this.importWarnings.length > 0) {
+          Text('注意：' + this.importWarnings.join('；'))
+            .fontSize(10)
+            .fontColor('#B4664C')
+            .width('100%')
+        }
+
+        Row({ space: 8 }) {
+          Button('覆盖当前课表')
+            .fontSize(11)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#E07A5F')
+            .onClick(() => {
+              this.applyImport('replace');
+            })
+          Button('合并到当前')
+            .fontSize(11)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#7FA98B')
+            .onClick(() => {
+              this.applyImport('merge');
+            })
+        }
+        .width('100%')
+
+        Button('导入为新课表（保留原课表）')
+          .fontSize(11)
+          .height(32)
+          .width('100%')
+          .backgroundColor('#5B7C99')
+          .onClick(() => {
+            this.applyImport('new');
+          })
+      }
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor('#FFFFFF')
+    .borderRadius({ topLeft: 16, topRight: 16 })
+    .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+  }
+
+  // ---------------------------------------------------------------- 开发者入口
   @Builder
   devPanel() {
     Column({ space: 6 }) {
@@ -518,9 +653,13 @@ struct Index {
     }
   }
 
-  /** pdf.js 回传（在 UI 线程回调） */
+  /** pdf.js 回传（在 UI 线程回调）。按 `pdfPurpose` 分流：spike 展示 / 导入解析 */
   private onPdfPayload(payload: string): void {
     const result = PdfRunText.parse(payload);
+    if (this.pdfPurpose === 'import') {
+      this.onImportPayload(result);
+      return;
+    }
     const lines: SpikeLine[] = [];
     const head: SpikeLine = {
       label: 'pdf.js 回传',
@@ -569,6 +708,184 @@ struct Index {
     }
     this.pdfLines = lines;
     this.pdfRunning = false;
+  }
+
+  // ---------------------------------------------------------------- 导入课表
+
+  /** 选 PDF → 读字节 → 交给 pdf.js。用户取消不算错误 */
+  private async startImport(): Promise<void> {
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      return;
+    }
+    let picked: PickedPdf | null = null;
+    try {
+      picked = await PdfFile.pick(ctx as common.UIAbilityContext);
+    } catch (e) {
+      const err = e as Error;
+      this.importOpen = true;
+      this.importError = '打开文件选择器失败：' + err.message;
+      return;
+    }
+    if (picked === null) {
+      return;
+    }
+
+    this.importOpen = true;
+    this.importBusy = true;
+    this.importError = '';
+    this.importStage = '读取文件…';
+    this.importFileName = picked.name;
+    this.importFormat = '';
+    this.importCount = 0;
+    this.importPreview = [];
+    this.importWarnings = [];
+    this.importCourses = [];
+
+    try {
+      const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
+      if (!this.webReady) {
+        throw new Error('解析器还没就绪（pdf.js 页面未加载完），请稍后再试');
+      }
+      this.importStage = '解析中…';
+      this.pdfPurpose = 'import';
+      this.webController.runJavaScript(PdfJs.extractCall(base64));
+    } catch (e) {
+      const err = e as Error;
+      this.importBusy = false;
+      this.importError = err.message;
+    }
+  }
+
+  /** pdf.js 回传 → 选解析器 → 生成预览（**不写库**，等用户点按钮） */
+  private onImportPayload(result: PdfExtractResult): void {
+    if (!result.ok) {
+      this.importBusy = false;
+      this.importError = '解析失败：' + result.error;
+      return;
+    }
+    if (result.runs.length === 0) {
+      this.importBusy = false;
+      this.importError = '这份 PDF 里没有可读文字（可能是扫描件）。扫描件请用"图片导入"。';
+      return;
+    }
+
+    // 两种版式都试，取认出的课更多的那个（与 Android 的自动判断一致）
+    const grid: ParseResult = GridFormatParser.parse(result.runs);
+    const list: ParseResult = ListFormatParser.parse(result.runs);
+    const best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
+
+    if (best.courses.length === 0) {
+      this.importBusy = false;
+      this.importError = '认不出课表结构：' + (best.warnings.length > 0 ? best.warnings.join('；') : '未匹配到任何课程');
+      return;
+    }
+
+    this.importCourses = this.toImportItems(best);
+    this.importFormat = best.format;
+    this.importCount = this.importCourses.length;
+    this.importWarnings = best.warnings;
+
+    const preview: string[] = [];
+    const n: number = Math.min(6, this.importCourses.length);
+    for (let i = 0; i < n; i++) {
+      const item: CourseWithSchedules = this.importCourses[i];
+      const s: CourseSchedule | null = item.schedules.length > 0 ? item.schedules[0] : null;
+      let line: string = item.course.name;
+      if (s !== null) {
+        line += ` · 周${s.dayOfWeek} ${s.startPeriod}-${s.endPeriod} 节 · ${WeekMasks.format(BigInt(s.weekMask))}`;
+      } else {
+        line += ' · 无时段';
+      }
+      preview.push(line);
+    }
+    this.importPreview = preview;
+    this.importBusy = false;
+    this.importStage = '预览';
+  }
+
+  /** RawCourse（解析结果）→ 库模型 */
+  private toImportItems(parsed: ParseResult): CourseWithSchedules[] {
+    const out: CourseWithSchedules[] = [];
+    for (const rc of parsed.courses) {
+      const course: Course = {
+        id: 0,
+        timetableId: 0,
+        name: rc.name,
+        teacher: rc.teacher,
+        location: rc.location,
+        color: 0,
+        category: rc.category,
+        note: '',
+      };
+      const schedules: CourseSchedule[] = [];
+      for (const rs of rc.schedules) {
+        const s: CourseSchedule = {
+          id: 0,
+          courseId: 0,
+          dayOfWeek: rs.dayOfWeek,
+          startPeriod: rs.startPeriod,
+          endPeriod: rs.endPeriod,
+          weekMask: maskToDb(rs.weekMask),
+        };
+        schedules.push(s);
+      }
+      const item: CourseWithSchedules = { course: course, schedules: schedules };
+      out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * 按用户选择落库。
+   * - replace：清空当前课表的课程（**不动自定义安排**）
+   * - merge：按「名称+教师+地点」更新时段，其余新增
+   * - new：新建一张课表（沿用当前学期的开学日与周数、复制作息），导进去并切过去
+   */
+  private async applyImport(mode: string): Promise<void> {
+    if (this.importBusy || this.importCourses.length === 0) {
+      return;
+    }
+    this.importBusy = true;
+    this.importStage = '写入中…';
+    try {
+      const store: ScheduleStore = await this.openStore();
+      if (mode === 'replace') {
+        await store.replaceCourses(this.importCourses);
+      } else if (mode === 'merge') {
+        const r = await store.mergeCourses(this.importCourses);
+        promptAction.showToast({ message: `合并完成：新增 ${r.added} 门，更新 ${r.updated} 门`, duration: 2000 });
+      } else {
+        const snap: Snapshot = await store.snapshot();
+        const start: number = snap.timetable === null
+          ? WeekCalculator.mondayOfEpochDay(WeekCalculator.todayEpochDay())
+          : snap.timetable.startDateEpochDay;
+        const weeks: number = snap.timetable === null ? 20 : snap.timetable.totalWeeks;
+        const fromId: number = store.currentId;
+        const name: string = this.importFileName.length > 0
+          ? this.importFileName.replace('.pdf', '')
+          : '导入的课表';
+        await store.createTimetable(name, start, weeks, fromId, Date.now());
+        await store.replaceCourses(this.importCourses);
+      }
+      this.importOpen = false;
+      this.importBusy = false;
+      await this.load();
+    } catch (e) {
+      const err = e as Error;
+      this.importBusy = false;
+      this.importError = '写入失败：' + err.message;
+      this.importStage = '预览';
+    }
+  }
+
+  private closeImport(): void {
+    if (this.importBusy) {
+      return;
+    }
+    this.importOpen = false;
+    this.importError = '';
+    this.pdfPurpose = 'spike';
   }
 
   // ---------------------------------------------------------------- 交互
@@ -735,7 +1052,8 @@ struct Index {
     this.spiking = false;
   }
 
-  /** 开发者入口用：拿到当前库的 store（数据已就绪时直接复用 store 实例也行，这里统一走一次 open） */  private async openStoreForDev(): Promise<ScheduleStore> {
+  /** 开发者入口用：拿到当前库的 store */
+  private async openStore(): Promise<ScheduleStore> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
       throw new Error('拿不到 Context');
@@ -758,7 +1076,7 @@ struct Index {
    */
   private async writeSamples(): Promise<void> {
     try {
-      const store: ScheduleStore = await this.openStoreForDev();
+      const store: ScheduleStore = await this.openStore();
       const everyWeek: number = maskToDb((BigInt(1) << BigInt(16)) - BigInt(1));
       const oddWeeks: number = maskToDb(BigInt(21845)); // 1,3,5…15 周
 
@@ -783,7 +1101,7 @@ struct Index {
 
   private async clearAllCourses(): Promise<void> {
     try {
-      const store: ScheduleStore = await this.openStoreForDev();
+      const store: ScheduleStore = await this.openStore();
       const snap: Snapshot = await store.snapshot();
       for (const c of snap.courses) {
         await store.deleteCourse(c.id);
@@ -952,4 +1270,5 @@ struct Index {
     return out;
   }
 }
+
 
