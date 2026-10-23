@@ -1,5 +1,4 @@
 import { common } from '@kit.AbilityKit';
-import { promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import {
   CourseDraft,
@@ -118,8 +117,6 @@ struct Index {
   @State webLog: string[] = [];
   /** 是否已经需要 pdf.js（点了导入/spike 才加载页面） */
   @State webRequested: boolean = false;
-  /** Web 的地址：默认 about:blank，真正要解析时才换成 pdf.js 页面 */
-  @State pageUrl: string = 'about:blank';
 
   // ---------------- 导入课表（PDF）
   @State importOpen: boolean = false;
@@ -133,6 +130,8 @@ struct Index {
   @State importError: string = '';
   /** pdf.js 这次回传是给"spike"还是给"导入"用的 */
   private pdfPurpose: string = 'spike';
+  /** 导入正在进行（含文件选择器那一小段），用来挡住连点导致的并发解析 */
+  private importStarting: boolean = false;
   private importCourses: CourseWithSchedules[] = [];
 
   // ---------------- 二级页面（作息 / 课表）
@@ -1143,7 +1142,14 @@ struct Index {
     }
   }
 
-  /** 确保 pdf.js 已就绪：需要时让 Web 加载解析页（用 loadUrl，因为 Web({src}) 只在创建时生效） */
+  /**
+   * 确保 pdf.js 已就绪：把 `webRequested` 置真让 Web 组件出现，然后轮询就绪标记。
+   *
+   * 这里**不能**先建 Web 再调 `loadUrl()`：后置 `loadUrl` 会报
+   * `The WebviewController must be associated with a Web component`；
+   * 而 `src: $rawfile(...)` 在事后创建时又不触发 `OnPageEnd`。
+   * 实测可用的组合只有「条件创建 + `src` 直接写 `resource://rawfile/pdfjs/viewer.html`」。
+   */
   private async ensureWeb(): Promise<boolean> {
     this.webRequested = true;
     // 30 秒上限：这台模拟器加载 pdf.js（1.5MB）实测要十几秒
@@ -1287,8 +1293,26 @@ struct Index {
 
   // ---------------------------------------------------------------- 导入课表
 
-  /** 选 PDF → 读字节 → 交给 pdf.js。用户取消不算错误 */
+  /**
+   * 选 PDF → 读字节 → 交给 pdf.js。用户取消不算错误
+   *
+   * 外层挡一道重入：`importBusy` 要等文件选择器返回后才置位，
+   * 这期间按钮还是可点的。连点两次会跑两条解析链，而 `pdfPurpose` 与
+   * `window.__pdfResult` 都是单份的 —— 两次的结果会互相串味（A 的文件解析出 B 的课）。
+   */
   private async startImport(): Promise<void> {
+    if (this.importStarting) {
+      return;
+    }
+    this.importStarting = true;
+    try {
+      await this.startImportInner();
+    } finally {
+      this.importStarting = false;
+    }
+  }
+
+  private async startImportInner(): Promise<void> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
       return;
@@ -1437,7 +1461,7 @@ struct Index {
         await store.replaceCourses(this.importCourses);
       } else if (mode === 'merge') {
         const r = await store.mergeCourses(this.importCourses);
-        promptAction.showToast({ message: `合并完成：新增 ${r.added} 门，更新 ${r.updated} 门`, duration: 2000 });
+        this.getUIContext().getPromptAction().showToast({ message: `合并完成：新增 ${r.added} 门，更新 ${r.updated} 门`, duration: 2000 });
       } else {
         const snap: Snapshot = await store.snapshot();
         const start: number = snap.timetable === null
@@ -1474,12 +1498,38 @@ struct Index {
   // ---------------------------------------------------------------- 作息/课表：动作
 
   onBackPress(): boolean {
-    if (this.screen !== 'home') {
-      this.screen = 'home';
-      this.textDialog = '';
+    // 从最上面那层往下关，最后才交给系统退出。
+    // 顺序错了症状很具体：填了一半的课程表单，按一下返回就直接回桌面（输入全丢）
+    if (this.editorOpen) {
+      this.editorOpen = false;
+      return true;
+    }
+    if (this.semesterOpen) {
+      this.semesterOpen = false;
       return true;
     }
     if (this.textDialog.length > 0) {
+      this.textDialog = '';
+      return true;
+    }
+    if (this.importOpen) {
+      // 正在解析/写库时把返回吞掉：面板看起来还在，但后台已经在写，
+      // 这时候"关掉"最容易被理解成"取消了"
+      if (!this.importBusy) {
+        this.closeImport();
+      }
+      return true;
+    }
+    if (this.detailTitle.length > 0) {
+      this.closeDetail();
+      return true;
+    }
+    if (this.showDev) {
+      this.showDev = false;
+      return true;
+    }
+    if (this.screen !== 'home') {
+      this.screen = 'home';
       this.textDialog = '';
       return true;
     }
@@ -1494,7 +1544,7 @@ struct Index {
       this.screen = 'timetables';
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '读取课表列表失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '读取课表列表失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1531,7 +1581,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '切换失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '切换失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1540,10 +1590,10 @@ struct Index {
       const store: ScheduleStore = await this.openStore();
       await store.setPrimary(store.currentId);
       this.timetables = await store.allTimetables();
-      promptAction.showToast({ message: '已设为主课表', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '已设为主课表', duration: 1500 });
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '设置失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '设置失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1554,7 +1604,7 @@ struct Index {
       this.openPrimaryOnLaunch = isOn;
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1587,7 +1637,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '删除失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1595,7 +1645,7 @@ struct Index {
     const name: string = this.textValue.trim();
     const mode: string = this.textDialog;
     if (name.length === 0) {
-      promptAction.showToast({ message: '名字不能为空', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '名字不能为空', duration: 1500 });
       return;
     }
     try {
@@ -1617,7 +1667,7 @@ struct Index {
       this.textDialog = '';
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -1639,7 +1689,7 @@ struct Index {
 
   private async applySlotTime(slot: TimeSlot, startMinute: number, endMinute: number): Promise<void> {
     if (endMinute <= startMinute) {
-      promptAction.showToast({ message: '结束时间要晚于开始时间', duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '结束时间要晚于开始时间', duration: 2000 });
       return;
     }
     this.slotsBusy = true;
@@ -1656,7 +1706,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '保存失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -1690,7 +1740,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '加一节失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '加一节失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -1724,7 +1774,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '删除失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -1737,7 +1787,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      promptAction.showToast({ message: '恢复失败：' + err.message, duration: 2000 });
+      this.getUIContext().getPromptAction().showToast({ message: '恢复失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -1790,7 +1840,7 @@ struct Index {
     const snap: Snapshot | null = this.snapshot;
     const course: Course | null = this.findCourse(courseId);
     if (snap === null || course === null) {
-      promptAction.showToast({ message: '这门课已经不在课表里了', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '这门课已经不在课表里了', duration: 1500 });
       return;
     }
     const rows: DraftRow[] = [];
@@ -1824,7 +1874,7 @@ struct Index {
   private async saveCoursePayload(payload: CourseDraftPayload): Promise<void> {
     const store: ScheduleStore | null = this.store;
     if (store === null) {
-      promptAction.showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
       return;
     }
     const schedules: CourseSchedule[] = [];
@@ -1869,13 +1919,13 @@ struct Index {
           }
         }
       }
-      promptAction.showToast({
+      this.getUIContext().getPromptAction().showToast({
         message: this.editorCourseId > 0 ? '已更新：' + payload.name : '已添加：' + payload.name,
         duration: 1500,
       });
       this.editorCourseId = 0;
     } catch (e) {
-      promptAction.showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -1890,9 +1940,9 @@ struct Index {
       this.editorOpen = false;
       this.editorCourseId = 0;
       await this.refreshAfterEdit();
-      promptAction.showToast({ message: '已删除该课程', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '已删除该课程', duration: 1500 });
     } catch (e) {
-      promptAction.showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
+      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -1958,7 +2008,7 @@ struct Index {
       await this.refreshAfterEdit();
       // 开学日变了，"第几周"就变了：直接跳回本周，别停在原来那一页
       this.goToCurrentWeek();
-      promptAction.showToast({ message: '学期设置已更新', duration: 1500 });
+      this.getUIContext().getPromptAction().showToast({ message: '学期设置已更新', duration: 1500 });
     } catch (e) {
       this.semesterError = '保存失败：' + (e as Error).message;
     }
