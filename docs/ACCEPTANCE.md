@@ -14,17 +14,20 @@
 | 构建 | 各次（ms） | 中位数 |
 |---|---|---|
 | debug · 首帧就挂隐藏 WebView（加载 pdf.js） | 1042 / 1446 / 1223 | **1223** |
-| debug · WebView 改成**用时才创建** | 878 / 585 / 642 | **642** |
-| release（AOT，`-p buildMode=release`）· 懒加载 | 598 / 692 / 644 | **644** |
+| debug · WebView 常驻但停在 about:blank | 1102 / 1244 / 1095 | **1102** |
+| debug · WebView **用时才创建**（最终方案） | 698 / 737 / 660 | **698** |
+| release（AOT）· 懒创建 | 598 / 692 / 644 | **644** |
 
 结论：
-1. **首帧挂 1.5MB 的 pdf.js 会白白多花约 0.6s**（ArkWeb 引擎在进程启动阶段就要初始化：
-   日志里 `C04500/webview: CalculateActiveWebEngineVersion` 出现在 `LoadModule` 之前）。
-   已改成「点导入/跑 spike 时才创建 Web 组件」。
-2. release 与 debug 差别不大 → **瓶颈不在 ArkTS 代码**，而在 ArkUI 引擎与模拟器的软件渲染。
-   首帧不做任何数据库操作（`EntryAbility.onCreate` 为空，`aboutToAppear` 只是发起异步加载，
-   首帧画的是空网格 + 加载指示）。
-3. 与 Android 版（178 ms）比，这台模拟器上约慢 3.5 倍。**真机预期明显更快**，
+1. **只要 Web 组件在组件树里，进程启动就要为 ArkWeb 付约 0.4~0.5s**
+   （日志里 `C04500/webview: CalculateActiveWebEngineVersion` 早于 `LoadModule`）；
+   再让它真的加载 1.5MB 的 pdf.js，就再多 0.2~0.6s。
+2. 所以最终方案是 **点「导入」时才创建 Web 组件**（`if (this.webRequested)`），
+   并且 `src` 直接写 `resource://rawfile/pdfjs/viewer.html`（用 `$rawfile()` 或后置 `loadUrl`
+   在这台设备上都会出问题，见下节）。
+3. release 与 debug 差别不大 → **瓶颈不在 ArkTS 代码**，而在 ArkUI 引擎与模拟器的软件渲染。
+   首帧不做任何数据库操作（`EntryAbility.onCreate` 为空，`aboutToAppear` 只是发起异步加载）。
+4. 与 Android 版（178 ms）比，这台模拟器上约慢 3.5 倍。**真机预期明显更快**，
    但这一条目前**没有真机数据**，不作承诺。
 
 ## 2. 体积
@@ -73,7 +76,22 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 | 截图 OCR 导入 | ⬜ 模拟器无 OCR 后端，需真机 |
 | 学期设置（改开学日/周数） | 🔶 数据层 + 导入时沿用，**没有独立入口** |
 
-## 6. 遗留风险
+## 6. 踩过的平台坑（都花了实机调试时间，记下来）
+
+1. **`runJavaScript` 的返回值是 JSON 字面量**：JS 里返回空串，ArkTS 侧收到的是 `""`（两个引号）；
+   返回 `"1"` 时收到的是 `"\"1\""`。一开始拿它直接判空/比较，导致
+   "页面永远没就绪" 和 "结果里有转义换行" 两种怪现象。现在统一用 `JSON.parse` 还原。
+2. **`Web({ src: $rawfile(...) })` 在"事后创建"的组件里不会触发 `OnPageEnd`**；
+   而 `loadUrl()` 在组件还没挂载时又报 `The WebviewController must be associated with a Web component`。
+   可用的组合是：条件创建 + `src` 直接写 `resource://rawfile/...`。
+3. **`Scroll` 在内容比视口矮时会把内容垂直居中**（列表跑到屏幕中间）。
+   列表类界面改用 `List` + `ListItem`。
+4. **子组件的数据参数必须 `@Prop`**：普通成员只在创建时赋值一次，父组件更新不会下发
+   （周视图第一版就是网格一直空着，而标题栏已经更新）。
+5. **`resource://rawfile` 上不能发 XHR/fetch**（CORS 只允许 arkweb/http/https/data），
+   所以 pdf.js 的中文 CMap 只能内联成 JS 变量，不能走 `cMapUrl` 目录。
+
+## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。
 2. **PDF 导入的解析正确率**只在 1 份真实课表上验过（24 门）。不同学校的版式差异大，

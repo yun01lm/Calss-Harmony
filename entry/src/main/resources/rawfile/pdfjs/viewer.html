@@ -72,11 +72,25 @@
     }
   }
 
+  /*
+   * 结果放在全局变量里**等 ArkTS 来轮询**，主通道不是 registerJavaScriptProxy。
+   *
+   * 原因：`registerJavaScriptProxy` 必须在页面加载后 `refresh()` 才对当前页生效；
+   * 而 Web 组件是"点了导入才创建"的 —— 创建/注册/重载三者时序一旦错开，
+   * JS 里的 `window.pdfBridge` 就是 undefined，解析结果**静默丢失**
+   * （实测表现：一直卡在"解析中…"）。轮询没有这个时序问题。
+   */
+  window.__pdfResult = '';
+  window.__pdfError = '';
+
   function send(payload) {
+    // 代理通道保留作备用，但 ArkTS 侧以 __pdfResult 为准
     if (window.pdfBridge && typeof window.pdfBridge.report === 'function') {
-      window.pdfBridge.report(payload);
-    } else {
-      log('pdfBridge 未注册：' + payload.substring(0, 80));
+      try {
+        window.pdfBridge.report(payload);
+      } catch (e) {
+        // 忽略：主通道是 __pdfResult
+      }
     }
   }
 
@@ -131,22 +145,29 @@
 
   // ArkTS 调这个函数开始解析
   window.__runExtract = function (base64) {
+    window.__pdfResult = '';
+    window.__pdfError = '';
     log('解析中…');
     extractAll(base64).then(function (r) {
       log('完成：' + r.numPages + ' 页 / ' + (r.lines.length - 1) + ' 个文本片段');
+      let payload = '';
       if (r.lines.length === 1) {
         // 一个可读片段都没有：把"有多少文本项、其中多少是空串"报出去，
         // 这能区分"PDF 里没有文字"和"有文字但字体没有 Unicode 映射（取不出可读字符）"
-        send('ERR\t没有可读文本：' + r.numPages + ' 页 / ' + r.totalItems +
-          ' 个文本项，其中 ' + r.emptyItems + ' 个取不出字符（多为 CID 字体缺 ToUnicode 映射）\nEND');
-        return;
+        payload = 'ERR\t没有可读文本：' + r.numPages + ' 页 / ' + r.totalItems +
+          ' 个文本项，其中 ' + r.emptyItems + ' 个取不出字符（多为 CID 字体缺 ToUnicode 映射）\nEND';
+      } else {
+        r.lines.push('END');
+        payload = r.lines.join('\n');
       }
-      r.lines.push('END');
-      send(r.lines.join('\n'));
+      window.__pdfResult = payload;
+      send(payload);
     }).catch(function (e) {
       const msg = String(e && e.message ? e.message : e);
       log('失败：' + msg);
-      send('ERR\t' + msg.replace(/[\t\r\n]/g, ' ') + '\nEND');
+      const payload = 'ERR\t' + msg.replace(/[\t\r\n]/g, ' ') + '\nEND';
+      window.__pdfError = payload;
+      send(payload);
     });
   };
 

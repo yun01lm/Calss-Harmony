@@ -15,7 +15,7 @@ import { type CourseLike, type EventLike, type ParseResult, type PdfExtractResul
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
-import { PayloadSink, PdfBridge, PdfJs } from '../platform/PdfJs';
+import { PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
 import { ScheduleStore } from '../data/ScheduleStore';
 import { Course, CourseSchedule, CourseWithSchedules, maskToDb, Snapshot, TimeSlot, Timetable } from '../data/models';
@@ -75,8 +75,10 @@ struct Index {
   @State pdfRunning: boolean = false;
   @State webReady: boolean = false;
   @State webLog: string[] = [];
-  /** 是否已经需要 pdf.js（点了导入/spike 才创建 Web 组件） */
+  /** 是否已经需要 pdf.js（点了导入/spike 才加载页面） */
   @State webRequested: boolean = false;
+  /** Web 的地址：默认 about:blank，真正要解析时才换成 pdf.js 页面 */
+  @State pageUrl: string = 'about:blank';
 
   // ---------------- 导入课表（PDF）
   @State importOpen: boolean = false;
@@ -102,7 +104,6 @@ struct Index {
   @State textValue: string = '';
   @State openPrimaryOnLaunch: boolean = false;
   private webController: webview.WebviewController = new webview.WebviewController();
-  private pdfSink: PayloadSink | null = null;
 
   /** 程序化翻页中。不是 @State：它不影响渲染，只用来压住 onChange */
   private autoScrolling: boolean = false;
@@ -112,17 +113,7 @@ struct Index {
   private db: Rdb | null = null;
 
   aboutToAppear(): void {
-    // pdf.js 的回调经静态 sink 转进来（JS 调用时代理对象的 this 不可靠）
-    this.pdfSink = new PayloadSink((payload: string) => {
-      this.onPdfPayload(payload);
-    });
-    PdfBridge.setSink(this.pdfSink);
     this.load();
-  }
-
-  aboutToDisappear(): void {
-    PdfBridge.setSink(null);
-    this.pdfSink = null;
   }
 
   build() {
@@ -184,9 +175,7 @@ struct Index {
         this.textDialogCard()
       }
 
-      // pdf.js 容器：1x1 且透明。它只负责解析 PDF，界面不展示（见 platform/PdfJs.ts）
-      // **只在真正要用时创建**：首帧就挂一个 Web 会把 pdf.js（1.5MB）一起加载，
-      // 冷启动白白多等（实测这台模拟器上首帧从 ~0.6s 涨到 1.2s）
+      // pdf.js 容器：1x1 且透明，**用时才创建**（常驻会让冷启动多 ~0.5s）
       if (this.webRequested) {
         this.hiddenWeb()
       }
@@ -938,18 +927,13 @@ struct Index {
 
   @Builder
   hiddenWeb() {
-    Web({ src: $rawfile('pdfjs/viewer.html'), controller: this.webController })
+    Web({ src: 'resource://rawfile/pdfjs/viewer.html', controller: this.webController })
       .width(1)
       .height(1)
       .opacity(0)
       .javaScriptAccess(true)
       .domStorageAccess(true)
       .fileAccess(true)
-      .onControllerAttached(() => {
-        // 注册 JS 代理必须在页面加载前后各做一次并 refresh()，否则页面里的 window.pdfBridge 是空的
-        this.webController.registerJavaScriptProxy(new PdfBridge(), 'pdfBridge', ['report']);
-        this.webController.refresh();
-      })
       .onPageEnd(() => {
         this.webReady = true;
       })
@@ -987,6 +971,14 @@ struct Index {
       const info: SpikeLine = { label: 'PDF 已读入并送去 pdf.js', ok: base64.length > 0, detail: base64.length + ' 字符(base64)' };
       this.pdfLines = [info];
       this.webController.runJavaScript(PdfJs.extractCall(base64));
+      const payload: string = await this.pollPdfResult(60000);
+      if (payload.length === 0) {
+        const timeout: SpikeLine = { label: '解析超时', ok: false, detail: '60 秒内 pdf.js 没有回结果' };
+        this.pdfLines = [info, timeout];
+        this.pdfRunning = false;
+        return;
+      }
+      this.onPdfPayload(payload);
     } catch (e) {
       const err = e as Error;
       const line: SpikeLine = { label: 'pdf.js 调用失败', ok: false, detail: err.message };
@@ -995,23 +987,89 @@ struct Index {
     }
   }
 
-  /** 确保 pdf.js 页面已就绪（首次导入时才创建 Web 组件并等它 onPageEnd） */
+  /** 确保 pdf.js 已就绪：需要时让 Web 加载解析页（用 loadUrl，因为 Web({src}) 只在创建时生效） */
   private async ensureWeb(): Promise<boolean> {
-    if (this.webReady) {
-      return true;
-    }
     this.webRequested = true;
-    for (let i = 0; i < 60; i++) {
-      if (this.webReady) {
+    // 30 秒上限：这台模拟器加载 pdf.js（1.5MB）实测要十几秒
+    for (let i = 0; i < 150; i++) {
+      const raw: string | null = await this.runJs(PdfJs.READY_SCRIPT);
+      const ready: string = raw === null ? '' : Index.decodeJsString(raw);
+      if (ready === '1') {
+        this.webReady = true;
         return true;
       }
-      await new Promise<void>((resolve) => {
-        setTimeout(() => {
-          resolve();
-        }, 100);
-      });
+      await Index.sleep(200);
     }
-    return this.webReady;
+    return false;
+  }
+
+  /** 执行一段 JS 并取它的返回值（失败/无返回时给 null） */
+  private runJs(script: string): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
+      try {
+        this.webController.runJavaScript(script, (err, result) => {
+          if (err !== null && err !== undefined) {
+            resolve(null);
+            return;
+          }
+          resolve(result === undefined ? null : result);
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  /**
+   * `runJavaScript` 的回传值是**带引号的字面量**：JS 里空串回来是 `""`，
+   * 就绪标记 `"1"`，payload 是 `"OK\n1\t..."`（换行、制表符都是转义形式）。
+   * 不还原就会踩两个坑：① 空串长度 2 被当成"有结果"；② payload 里全是 `\n` 文本。
+   * 用 JSON.parse 还原（JS 的字符串字面量语法与 JSON 兼容）。
+   */
+  private static decodeJsString(raw: string): string {
+    if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+      try {
+        const parsed = JSON.parse(raw) as string;
+        return typeof parsed === 'string' ? parsed : '';
+      } catch (e) {
+        return '';
+      }
+    }
+    return raw;
+  }
+
+  /**
+   * 轮询取解析结果。
+   *
+   * 为什么轮询而不是等 JS 回调：Web 组件是"用时才加载"的，
+   * `registerJavaScriptProxy` 的注册/refresh 与页面加载时序一错开，
+   * JS 里的代理就是 undefined，结果会**静默丢失**。
+   * `window.__pdfResult` / `__pdfError` 由 viewer.html 写入，这里只负责取并还原引号。
+   */
+  private async pollPdfResult(timeoutMs: number): Promise<string> {
+    const started: number = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const rawError: string | null = await this.runJs(PdfJs.ERROR_SCRIPT);
+      const errorPayload: string = rawError === null ? '' : Index.decodeJsString(rawError);
+      if (errorPayload.length > 0) {
+        return errorPayload;
+      }
+      const raw: string | null = await this.runJs(PdfJs.RESULT_SCRIPT);
+      const payload: string = raw === null ? '' : Index.decodeJsString(raw);
+      if (payload.length > 0) {
+        return payload;
+      }
+      await Index.sleep(150);
+    }
+    return '';
+  }
+
+  private static sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      setTimeout(() => {
+        resolve();
+      }, ms);
+    });
   }
 
   /** pdf.js 回传（在 UI 线程回调）。按 `pdfPurpose` 分流：spike 展示 / 导入解析 */
@@ -1105,13 +1163,20 @@ struct Index {
 
     try {
       const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
+      // 首次导入要先创建 WebView 并加载 pdf.js（这台模拟器实测十几秒），把原因说清楚
+      this.importStage = this.webReady ? '解析中…' : '准备解析器（首次较慢）…';
       const ready: boolean = await this.ensureWeb();
       if (!ready) {
-        throw new Error('pdf.js 页面没加载出来，请再试一次');
+        throw new Error('解析器加载失败（30 秒内没就绪），请重试');
       }
       this.importStage = '解析中…';
       this.pdfPurpose = 'import';
       this.webController.runJavaScript(PdfJs.extractCall(base64));
+      const payload: string = await this.pollPdfResult(60000);
+      if (payload.length === 0) {
+        throw new Error('解析超时（60 秒内没有结果）');
+      }
+      this.onPdfPayload(payload);
     } catch (e) {
       const err = e as Error;
       this.importBusy = false;
@@ -1905,6 +1970,12 @@ struct Index {
     return out;
   }
 }
+
+
+
+
+
+
 
 
 

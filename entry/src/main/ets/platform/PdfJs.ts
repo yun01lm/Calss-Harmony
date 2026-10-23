@@ -15,51 +15,18 @@
  *
  * - `rawfile/pdfjs/viewer.html`：**唯一**懂 pdf.js 的地方（跑在 WebView 里，JS）；
  * - `logic/PdfRunText.ts`：解析它回传的制表符文本（纯逻辑，Node 上有断言）；
- * - 本文件：桥接（注册 JS 代理、把 rawfile 的 PDF 编码成 base64 传进去）。
+ * - 本文件：把 rawfile 的 PDF 编码成 base64 传进去，并给出取结果的 JS 片段。
  *
- * ArkWeb 与 ArkTS 之间的回调必须经过 `registerJavaScriptProxy` 注册的对象；
- * 而那个对象的 `this` 在 JS 调用时不可靠，所以这里用**静态 sink** 把回调转给页面。
+ * ## 结果怎么拿回来（踩过一次坑）
+ *
+ * 一开始用 `registerJavaScriptProxy` + `refresh()` 让 JS 回调 ArkTS。
+ * 但 Web 组件改成"点了导入才创建"之后，创建/注册/重载的时序一旦错开，
+ * JS 里的 `window.pdfBridge` 就是 undefined —— 解析结果**静默丢失**，
+ * 界面一直卡在"解析中…"。现在改成：JS 把结果写进 `window.__pdfResult`，
+ * ArkTS 用 `runJavaScript` **轮询**取（见 `pollScript` / `errorScript`）。
  */
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-
-/** JS 回传的接收方（页面的一个薄包装，见 `PayloadSink`） */
-export interface PdfPayloadSink {
-  receive(payload: string): void;
-}
-
-/**
- * 挂在 `window.pdfBridge` 上的对象。
- * 注意：方法名必须与 `viewer.html` 里调用的名字一致（`report`），
- * 注册时 `methodList: ['report']` 也要一致，否则 JS 侧调用直接失败。
- */
-export class PdfBridge {
-  private static sink: PdfPayloadSink | null = null;
-
-  static setSink(sink: PdfPayloadSink | null): void {
-    PdfBridge.sink = sink;
-  }
-
-  report(payload: string): void {
-    const sink: PdfPayloadSink | null = PdfBridge.sink;
-    if (sink !== null) {
-      sink.receive(payload);
-    }
-  }
-}
-
-/** 把"函数"包成接口实例（ArkTS 的结构体不能直接 implements 接口） */
-export class PayloadSink implements PdfPayloadSink {
-  private readonly handler: (payload: string) => void;
-
-  constructor(handler: (payload: string) => void) {
-    this.handler = handler;
-  }
-
-  receive(payload: string): void {
-    this.handler(payload);
-  }
-}
 
 export class PdfJs {
   /**
@@ -82,4 +49,13 @@ export class PdfJs {
   static extractCall(base64: string): string {
     return '__runExtract("' + base64 + '")';
   }
+
+  /** 取"成功结果"的 JS 片段（空串 = 还没算完） */
+  static readonly RESULT_SCRIPT: string = 'window.__pdfResult';
+
+  /** 取"失败结果"的 JS 片段（空串 = 没出错） */
+  static readonly ERROR_SCRIPT: string = 'window.__pdfError';
+
+  /** 页面是否已就绪（pdf.js 已加载） */
+  static readonly READY_SCRIPT: string = '(window.pdfjsLib ? "1" : "")';
 }
