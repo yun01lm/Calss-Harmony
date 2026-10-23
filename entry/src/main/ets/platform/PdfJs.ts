@@ -56,6 +56,16 @@ export class PdfJs {
   /** 取"失败结果"的 JS 片段（空串 = 没出错） */
   static readonly ERROR_SCRIPT: string = 'window.__pdfError';
 
+  /**
+   * 开始新一轮抽取前必须先清空上一次的返回值。
+   *
+   * 不清的后果是**上一个文件的结果被当成这一个文件的**：`__pdfResult` 一直留着，
+   * 新文件的 `__runExtract` 还没开始（或直接失败），轮询第一轮就读到旧值，
+   * 界面显示 B 的文件名、里面是 A 的课，"覆盖当前课表"就真的把 A 写进库了。
+   */
+  static readonly CLEAR_SCRIPT: string =
+    'window.__pdfResult = null; window.__pdfError = null; ""';
+
   /** 页面是否已就绪（pdf.js 已加载） */
   static readonly READY_SCRIPT: string = '(window.pdfjsLib ? "1" : "")';
 }

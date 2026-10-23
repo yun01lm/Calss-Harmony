@@ -235,8 +235,11 @@ test('setPrimary：无论之前有几张主课表，之后只有一张', async (
 });
 
 test('deleteTimetable：课程/时段/安排/作息全清，**不留孤儿时段**（外键关着也成立）', async () => {
-  // 故意不开 PRAGMA foreign_keys —— relationalStore 没有替我们打开它的保证
+  // 故意不开 PRAGMA foreign_keys —— relationalStore 没有替我们打开它的保证。
+  // 断言一句"确实关着"：node:sqlite 的默认值是 ON，helper 一旦没显式关掉，
+  // 这个用例就会在外键开着的库上跑，永远绿、也永远证明不了什么
   const { store, runner } = makeStore({ foreignKeys: false });
+  assert.equal(runner.foreignKeysEnabled(), false);
   await store.ensureCurrentTimetable(NOW);
   const id = store.currentId;
   await store.saveCourse(course('数据结构'), [sched(1, 1, 2, WEEKS_1_TO_16)]);
@@ -314,6 +317,79 @@ test('saveCourse 更新：时段整体替换（旧时段不残留），课程字
     schedules.map((s) => [s.dayOfWeek, s.startPeriod, s.endPeriod]),
     [[3, 5, 6]]
   );
+});
+
+test('saveCourse 更新：掩码不合法时**旧时段不能丢**（校验在写库之前）', async () => {
+  const { store, runner } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  const id = await store.saveCourse(course('软件工程'), [
+    sched(1, 1, 2, WEEKS_1_TO_16),
+    sched(3, 5, 6, WEEKS_1_TO_16),
+  ]);
+  const before = (await store.readCoursesOf(store.currentId))[0];
+
+  // 绕过 sched() 的 maskToDb 直接构造非法掩码（负数）：只有这种值能走到 assertSafeMask
+  const badSchedule: CourseSchedule = {
+    id: 0,
+    courseId: 0,
+    dayOfWeek: 3,
+    startPeriod: 5,
+    endPeriod: 6,
+    weekMask: -1,
+  };
+  await assert.rejects(
+    store.saveCourse({ ...before, name: '改了名字' }, [badSchedule]),
+    /掩码不合法/
+  );
+
+  // 关键：课程名没被改、时段还在两条 —— 第一版是先 DELETE 再校验，这里会剩 0 条
+  const after = (await store.readCoursesOf(store.currentId))[0];
+  assert.equal(after.name, '软件工程');
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM course_schedules WHERE courseId = ?', [id]), 2);
+});
+
+test('saveCourse 更新：目标课程已被删 → 明确报错，不写孤儿时段', async () => {
+  const { store, runner } = makeStore({ foreignKeys: false });
+  await store.ensureCurrentTimetable(NOW);
+  const id = await store.saveCourse(course('要删的课'), [sched(1, 1, 2, WEEKS_1_TO_16)]);
+  await store.deleteCourse(id);
+
+  await assert.rejects(
+    store.saveCourse({ ...course('要删的课'), id: id }, [sched(2, 3, 4, WEEKS_1_TO_16)]),
+    /已经不存在/
+  );
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM course_schedules'), 0);
+});
+
+test('mergeCourses：一门课上两次只写一条课程行、两条时段', async () => {
+  const { store, runner } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  const result = await store.mergeCourses([
+    bundle(course('软件工程'), [sched(2, 3, 4, WEEKS_1_TO_16)]),
+    bundle(course('软件工程'), [sched(5, 5, 6, WEEKS_1_TO_16)]),
+  ]);
+  assert.deepEqual(result, { added: 1, updated: 0 });
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM courses'), 1);
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM course_schedules'), 2);
+
+  // 再合并一次：仍然是同一门课，不是又插一条
+  const again = await store.mergeCourses([
+    bundle(course('软件工程'), [sched(2, 3, 4, WEEKS_1_TO_16), sched(5, 5, 6, WEEKS_1_TO_16)]),
+  ]);
+  assert.deepEqual(again, { added: 0, updated: 1 });
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM courses'), 1);
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM course_schedules'), 2);
+});
+
+test('replaceCourses：同样按课程归并（覆盖导入不留重复课程行）', async () => {
+  const { store, runner } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  await store.replaceCourses([
+    bundle(course('大学物理'), [sched(2, 1, 2, WEEKS_1_TO_16)]),
+    bundle(course('大学物理'), [sched(4, 3, 4, WEEKS_1_TO_16)]),
+  ]);
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM courses'), 1);
+  assert.equal(await runner.scalarInt('SELECT COUNT(*) FROM course_schedules'), 2);
 });
 
 test('deleteCourse：时段一起清（外键关着也不留孤儿）', async () => {
@@ -407,7 +483,10 @@ test('mergeCourses：导入值是空类别时不覆盖已有类别', async () =>
 test('mergeCourses：识别同一门课时会去掉首尾空格', async () => {
   const { store } = makeStore();
   await store.ensureCurrentTimetable(NOW);
-  await store.mergeCourses([bundle(course('英语', { teacher: '李', location: '2-202' }), [])]);
+  // 一条时段都没有的课是不可能画出来的，也会在归并时被丢掉 —— 所以这里给真时段
+  await store.mergeCourses([
+    bundle(course('英语', { teacher: '李', location: '2-202' }), [sched(1, 1, 2, WEEKS_1_TO_16)]),
+  ]);
   const result = await store.mergeCourses([
     bundle(course(' 英语 ', { teacher: ' 李 ', location: ' 2-202 ' }), [sched(3, 3, 4, WEEKS_1_TO_16)]),
   ]);

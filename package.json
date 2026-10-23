@@ -7,9 +7,11 @@
   "scripts": {
     "test": "node --test \"tests/*.test.ts\"",
     "test:watch": "node --test --watch \"tests/*.test.ts\"",
+    "check:arch": "node tools/check-architecture.mjs",
     "build": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap --no-daemon"
   },
   "engines": {
-    "node": ">=22.6"
+    "//": "原生跑 .ts 且默认带 node:sqlite 需要 Node 24；22.x 得加 --experimental-* 才能跑测试",
+    "node": ">=24"
   }
 }

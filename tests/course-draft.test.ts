@@ -199,3 +199,19 @@ test('不存在的日期被拒绝（不做日期滚动）', () => {
   assert.equal(WeekCalculator.epochDayOfIso('2026-13-01'), null);
   assert.equal(WeekCalculator.epochDayOfIso('2026/09/07'), null);
 });
+
+// ---------------------------------------------------------------- 与存储边界对齐
+
+test('周次超过 53 周被挡在输入侧（否则写库时才抛错，界面像"点了没反应"）', () => {
+  // WeekMasks 能表示到 64 周，但库里是 JS number（2^53 上界 = 第 53 周）
+  const ok = check('课程', one('1-53'));
+  assert.equal(ok.error, '');
+
+  const tooFar = check('课程', one('1-64'));
+  assert.equal(tooFar.badRow, 0);
+  assert.ok(tooFar.error.indexOf('可保存范围') >= 0);
+  assert.equal(tooFar.schedules.length, 0);
+
+  const single = check('课程', one('54'));
+  assert.ok(single.error.indexOf('可保存范围') >= 0);
+});

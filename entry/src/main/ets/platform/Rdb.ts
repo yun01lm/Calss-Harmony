@@ -129,6 +129,14 @@ export class RdbRow implements SqlRow {
 export class Rdb implements SqlRunner {
   /** 库名 → 实例。RDB 不允许同进程重复打开同名库，这里保证只开一次 */
   private static readonly opened: Map<string, Rdb> = new Map<string, Rdb>();
+  /**
+   * 库名 → "正在打开"的 promise。
+   *
+   * 只缓存**已打开**的实例是不够的：`getRdbStore` 是 await，返回之前缓存还是空的。
+   * 冷启动时页面已经画出来了（首帧不等数据），此时点「课表」「作息」会各调一次 `open()`，
+   * 两个都 miss、两个都去开同名库 —— 一个句柄被丢掉，第二次打开还可能直接失败。
+   */
+  private static readonly opening: Map<string, Promise<Rdb>> = new Map<string, Promise<Rdb>>();
 
   private readonly store: relationalStore.RdbStore;
   private readonly dbName: string;
@@ -138,21 +146,36 @@ export class Rdb implements SqlRunner {
     this.dbName = dbName;
   }
 
-  /** 懒打开（缓存）；同一个库名多次调用返回同一个实例 */
-  static async open(context: common.Context, dbName: string = DB_NAME): Promise<Rdb> {
-    const cached = Rdb.opened.get(dbName);
+  /** 懒打开（缓存）；同一个库名多次调用返回同一个实例，并发调用共享同一次打开 */
+  static open(context: common.Context, dbName: string = DB_NAME): Promise<Rdb> {
+    const cached: Rdb | undefined = Rdb.opened.get(dbName);
     if (cached !== undefined) {
-      return cached;
+      return Promise.resolve(cached);
     }
-    const config: relationalStore.StoreConfig = {
-      name: dbName,
-      // S1：只有本机、不含敏感信息（课表就是这类）。与 Android 版"无加密、无权限"一致
-      securityLevel: relationalStore.SecurityLevel.S1,
-    };
-    const store: relationalStore.RdbStore = await relationalStore.getRdbStore(context, config);
-    const db = new Rdb(store, dbName);
-    Rdb.opened.set(dbName, db);
-    return db;
+    const pending: Promise<Rdb> | undefined = Rdb.opening.get(dbName);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const task: Promise<Rdb> = Rdb.openShared(context, dbName);
+    Rdb.opening.set(dbName, task);
+    return task;
+  }
+
+  private static async openShared(context: common.Context, dbName: string): Promise<Rdb> {
+    try {
+      const config: relationalStore.StoreConfig = {
+        name: dbName,
+        // S1：只有本机、不含敏感信息（课表就是这类）。与 Android 版"无加密、无权限"一致
+        securityLevel: relationalStore.SecurityLevel.S1,
+      };
+      const store: relationalStore.RdbStore = await relationalStore.getRdbStore(context, config);
+      const db = new Rdb(store, dbName);
+      Rdb.opened.set(dbName, db);
+      return db;
+    } finally {
+      // 成功/失败都要摘掉"正在打开"的标记，否则一次失败会把这个库永久钉在失败态
+      Rdb.opening.delete(dbName);
+    }
   }
 
   /** 关掉并删除整个库文件（迁移演练 / 重置用，正常路径不该出现） */
@@ -186,10 +209,13 @@ export class Rdb implements SqlRunner {
     const existing: string[] = await this.existingTables();
     // 只有 v1 才需要读旧学期；读的时候 semesters 还在（迁移步骤里才会 DROP）
     const legacy: LegacySemester | null = current === 1 ? await this.readLegacySemester() : null;
+    // 现有列：迁移里的 ALTER 要按它决定加不加（迁移必须可以重跑，见 data/migrations.ts）
+    const columns: string[] = current === 0 ? [] : await this.existingColumns();
 
     const input: BootstrapInput = {
       currentVersion: current,
       existingTables: existing,
+      existingColumns: columns,
       legacy: legacy,
       nowMillis: nowMillis,
       defaultStartEpochDay: defaultStartEpochDay,
@@ -337,6 +363,30 @@ export class Rdb implements SqlRunner {
       names.push(row.text('name'));
     }
     return knownTablesOnly(names);
+  }
+
+  /**
+   * 三张业务表现有的列，形如 `courses.timetableId`。
+   *
+   * 用途只有一个：让 v1→v2 的 `ALTER TABLE ADD COLUMN` **可以重跑**。
+   * SQLite 没有 `ADD COLUMN IF NOT EXISTS`，只能先问 `pragma_table_info`；
+   * 不问的话，"迁移提交了但版本号没写进去"的重跑会一直撞 `duplicate column name`。
+   */
+  private async existingColumns(): Promise<string[]> {
+    const out: string[] = [];
+    for (const table of ['courses', 'custom_events', 'time_slots']) {
+      let rows: RdbRow[] = [];
+      try {
+        rows = await this.query("SELECT name FROM pragma_table_info('" + table + "')");
+      } catch (e) {
+        // 表还不存在时 pragma 可能报错：当作"没有列"，让迁移去建
+        rows = [];
+      }
+      for (const row of rows) {
+        out.push(table + '.' + row.text('name'));
+      }
+    }
+    return out;
   }
 
   /**

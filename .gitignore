@@ -15,6 +15,13 @@
 /.appanalyzer
 *.hap
 *.hsp
+*.app
+
+# 由 DevEco 在首次 Sync 时生成（README 也这么要求：不进仓库）
+/hvigorw
+/hvigorw.bat
+/hvigor/hvigor-wrapper.js
+entry/.preview/
 
 # ---- 签名材料（绝不可入库）----
 *.p12
@@ -33,6 +40,7 @@ Thumbs.db
 
 # ---- 本地临时文件（截图/日志/脚本）----
 /.tmp/
+/tmp-audit/
 
 # 真实课表 PDF（含姓名）——只用于本地验证，绝不入库
 entry/src/main/resources/rawfile/spike-real*.pdf

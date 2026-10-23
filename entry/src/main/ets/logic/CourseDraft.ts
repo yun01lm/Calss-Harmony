@@ -59,6 +59,15 @@ export interface CourseDraftPayload {
 export class CourseDraft {
   static readonly MAX_DAY: number = 7;
   static readonly BAD_ROW_NONE: number = -1;
+  /**
+   * 能安全存进库的最大周次。
+   *
+   * `WeekMasks` 本身能表示到第 64 周（对应 Kotlin 的 Long），但库那边是
+   * **JS number**（`models.maskToDb` 的上限是 2^53，即第 53 周）。两个边界不一致时，
+   * 用户填 `1-64` 能通过表单，却在写库时抛错 —— 界面上就是"点了保存什么都没发生"。
+   * 所以输入侧直接用**更严的那个**。
+   */
+  static readonly MAX_STORABLE_WEEK: number = 53;
   static readonly WEEK_HINT: string =
     '格式：1-16、2,4,6-8 或 1-15单（单双周）；全角符号、「周」字保存时会自动纠正';
 
@@ -174,12 +183,21 @@ export class CourseDraft {
     }
 
     const schedules: DraftSchedule[] = [];
-    for (const r of fixed) {
+    for (let i = 0; i < fixed.length; i++) {
+      const r: DraftRow = fixed[i];
+      const mask: bigint = WeekMasks.parse(r.weeks);
+      if (mask >= CourseDraft.storageLimit()) {
+        // 与存储边界对齐：不拦下来的话能过表单、写库时才炸（用户看到的是"点了没反应"）
+        return CourseDraft.failed(
+          '第 ' + (i + 1) + ' 段的周次超出可保存范围（最多第 ' + CourseDraft.MAX_STORABLE_WEEK + ' 周）',
+          i, name, teacher, location, fixed
+        );
+      }
       schedules.push({
         dayOfWeek: r.day,
         startPeriod: r.start,
         endPeriod: r.end,
-        weekMask: WeekMasks.parse(r.weeks),
+        weekMask: mask,
       });
     }
     const ok: DraftResult = {
@@ -234,5 +252,10 @@ export class CourseDraft {
     }
     const n: number = Math.trunc(periodCount);
     return n < 1 ? 1 : n;
+  }
+
+  /** 2^53：库里能精确表示的掩码上界（`models.maskToDb` 用的是同一个数） */
+  private static storageLimit(): bigint {
+    return BigInt(1) << BigInt(CourseDraft.MAX_STORABLE_WEEK);
   }
 }

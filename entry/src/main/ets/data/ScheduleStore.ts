@@ -18,6 +18,7 @@
 import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, defaultSlots, type SlotSeed } from './schema.ts';
 import { seedSlotRows } from './migrations.ts';
 import { pickStartupTimetable, type TimetableChoice } from './startupRule.ts';
+import { courseKeyOf, mergeCourseItems } from './CourseMerge.ts';
 import { WeekCalculator } from '../logic/WeekCalculator.ts';
 import { type SqlArg, type SqlRow, type SqlRunner, type SqlStatement } from './SqlRunner.ts';
 import {
@@ -313,14 +314,28 @@ export class ScheduleStore {
 
   /**
    * 保存课程及其全部上课时段（**整体替换**时段，简单可靠）；自动挂到当前课表。
+   *
+   * 三条顺序上的硬要求（都是"数据会丢"或"存进去看不见"级别的）：
+   *
+   * 1. **先把所有掩码校验完，再动库**。第一版是先 `DELETE` 旧时段、再循环 `assertSafeMask`：
+   *    周次一不合法就抛错，而旧时段已经被删掉了 —— 一门课凭空变成"没有时间"，界面上直接消失。
+   * 2. **更新路径的 UPDATE / DELETE / INSERT 放进同一个 `runSteps` 事务**：分成两次提交，
+   *    中间任何失败（锁、IO、约束）都会留下"没有时段的课"。
+   * 3. 新建路径的事务里拿不到自增 id，所以失败时用**补偿删除**把课程行撤掉，
+   *    否则会留一门画不出来的孤儿课，下次再点保存又插一条。
+   *
    * @returns 课程 id（新建时是自增 id）
    */
   async saveCourse(course: Course, schedules: CourseSchedule[]): Promise<number> {
     const timetableId: number = await this.requireCurrent();
-    let courseId: number;
+
+    // 1. 校验（不碰库）
+    for (const s of schedules) {
+      assertSafeMask(s.weekMask);
+    }
 
     if (course.id === 0) {
-      courseId = await this.db.insertAndGetId(
+      const newId: number = await this.db.insertAndGetId(
         'INSERT INTO courses (timetableId, name, teacher, location, color, category, note) ' +
           'VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
@@ -333,12 +348,36 @@ export class ScheduleStore {
           course.note,
         ]
       );
-    } else {
-      courseId = course.id;
-      await this.db.exec(
-        'UPDATE courses SET timetableId = ?, name = ?, teacher = ?, location = ?, color = ?, ' +
+      const insertSteps: SqlStatement[] = [];
+      appendScheduleInserts(insertSteps, newId, schedules);
+      try {
+        await this.db.runSteps(insertSteps);
+      } catch (e) {
+        // 补偿：课程行已提交、时段没写进去 → 撤掉课程行，别留孤儿
+        try {
+          await this.db.exec('DELETE FROM courses WHERE id = ?', [newId]);
+        } catch (e2) {
+          // 补偿也失败：至少把原始错误抛出去，用户看到的是"保存失败"而不是"保存成功"
+        }
+        throw e;
+      }
+      return newId;
+    }
+
+    const courseId: number = course.id;
+    // 目标行必须存在：外键在设备上是关着的，UPDATE 0 行不会报错，
+    // 接下来插的时段就成了永久孤儿（还占着 id）
+    const exists: SqlRow[] = await this.db.query('SELECT id FROM courses WHERE id = ?', [courseId]);
+    if (exists.length === 0) {
+      throw new Error('要保存的课程已经不存在了（可能刚被删除），请重新打开课表');
+    }
+
+    const steps: SqlStatement[] = [
+      {
+        sql:
+          'UPDATE courses SET timetableId = ?, name = ?, teacher = ?, location = ?, color = ?, ' +
           'category = ?, note = ? WHERE id = ?',
-        [
+        params: [
           timetableId,
           course.name,
           course.teacher,
@@ -347,21 +386,11 @@ export class ScheduleStore {
           course.category,
           course.note,
           courseId,
-        ]
-      );
-      await this.db.exec('DELETE FROM course_schedules WHERE courseId = ?', [courseId]);
-    }
-
-    const steps: SqlStatement[] = [];
-    for (const s of schedules) {
-      assertSafeMask(s.weekMask);
-      steps.push({
-        sql:
-          'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
-          'VALUES (?, ?, ?, ?, ?)',
-        params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
-      });
-    }
+        ],
+      },
+      { sql: 'DELETE FROM course_schedules WHERE courseId = ?', params: [courseId] },
+    ];
+    appendScheduleInserts(steps, courseId, schedules);
     await this.db.runSteps(steps);
     return courseId;
   }
@@ -382,6 +411,8 @@ export class ScheduleStore {
    */
   async replaceCourses(items: CourseWithSchedules[]): Promise<void> {
     const timetableId: number = await this.requireCurrent();
+    // 同 mergeCourses：解析器"一格一条"，这里不归并就会把一门课上两次的课插成两条课程行
+    const coalesced: CourseWithSchedules[] = mergeCourseItems(items).items;
     const steps: SqlStatement[] = [
       {
         sql: 'DELETE FROM course_schedules WHERE courseId IN (SELECT id FROM courses WHERE timetableId = ?)',
@@ -389,7 +420,7 @@ export class ScheduleStore {
       },
       { sql: 'DELETE FROM courses WHERE timetableId = ?', params: [timetableId] },
     ];
-    for (const item of items) {
+    for (const item of coalesced) {
       appendInsertCourse(steps, timetableId, item);
     }
     await this.db.runSteps(steps);
@@ -403,17 +434,20 @@ export class ScheduleStore {
    */
   async mergeCourses(items: CourseWithSchedules[]): Promise<MergeResult> {
     const timetableId: number = await this.requireCurrent();
+    // 先按「名称+教师+地点」归并：解析器是"一格一条"输出，一门课上两次就是两条，
+    // 不归并的话本次批次自己就会插出两条同名课（键索引只在开头建一次，第二条查不到）
+    const coalesced: CourseWithSchedules[] = mergeCourseItems(items).items;
     const existing: Course[] = await this.readCoursesOf(timetableId);
     const byKey: Map<string, Course> = new Map<string, Course>();
     for (const c of existing) {
-      byKey.set(courseKey(c), c);
+      byKey.set(courseKeyOf(c), c);
     }
 
     let added = 0;
     let updated = 0;
     const steps: SqlStatement[] = [];
-    for (const item of items) {
-      const key: string = courseKey(item.course);
+    for (const item of coalesced) {
+      const key: string = courseKeyOf(item.course);
       const old: Course | undefined = byKey.get(key);
       if (old === undefined) {
         appendInsertCourse(steps, timetableId, item);
@@ -687,10 +721,7 @@ function toEvent(row: SqlRow): CustomEvent {
 
 // ---------------------------------------------------------------- 小工具
 
-/** 合并导入识别"同一门课"的键：名称 + 教师 + 地点（都去首尾空格，与 Android 一致） */
-function courseKey(c: Course): string {
-  return c.name.trim() + '\u0001' + c.teacher.trim() + '\u0001' + c.location.trim();
-}
+/** 合并导入识别"同一门课"的键在 `CourseMerge.courseKeyOf`（唯一实现，别在这里再写一份） */
 
 /**
  * 追加"插入一门课 + 它的全部时段"。
@@ -721,6 +752,22 @@ function appendInsertCourse(steps: SqlStatement[], timetableId: number, item: Co
         'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
         'SELECT (SELECT MAX(id) FROM courses WHERE timetableId = ?), ?, ?, ?, ?',
       params: [timetableId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
+    });
+  }
+}
+
+/** 一批"把时段挂到已知课程 id 上"的 INSERT（与 UPDATE/DELETE 同处一个事务时用） */
+function appendScheduleInserts(
+  steps: SqlStatement[],
+  courseId: number,
+  schedules: CourseSchedule[]
+): void {
+  for (const s of schedules) {
+    steps.push({
+      sql:
+        'INSERT INTO course_schedules (courseId, dayOfWeek, startPeriod, endPeriod, weekMask) ' +
+        'VALUES (?, ?, ?, ?, ?)',
+      params: [courseId, s.dayOfWeek, s.startPeriod, s.endPeriod, s.weekMask],
     });
   }
 }

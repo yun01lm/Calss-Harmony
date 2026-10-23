@@ -94,10 +94,18 @@ export class SqliteRunner implements SqlRunner {
 
   static open(options: SqliteRunnerOptions = {}): SqliteRunner {
     const db = new DatabaseSync(':memory:');
-    if (options.foreignKeys === true) {
-      db.exec('PRAGMA foreign_keys = ON');
-    }
+    // **必须显式关闭**：`node:sqlite` 的 `enableForeignKeyConstraints` 默认是 **true**，
+    // 而 `relationalStore`（设备上）默认是 OFF。不显式 OFF 的话，
+    // "故意不开外键" 的用例其实是在开着的库上跑的 —— 它们永远绿，也就永远证明不了什么。
+    db.exec(options.foreignKeys === true ? 'PRAGMA foreign_keys = ON' : 'PRAGMA foreign_keys = OFF');
     return new SqliteRunner(db);
+  }
+
+  /** 当前 `foreign_keys` 实际状态（用例里断言"确实是 OFF"用，避免helper又被默认值骗一次） */
+  foreignKeysEnabled(): boolean {
+    const row = this.db.prepare('PRAGMA foreign_keys').get() as Record<string, unknown>;
+    const value = row === undefined ? 0 : Number(Object.values(row)[0]);
+    return value === 1;
   }
 
   async query(sql: string, args: SqlArg[] = []): Promise<SqlRow[]> {

@@ -204,7 +204,7 @@ export class TimetableTextParser {
 
       const matches: TimeMatch[] = [];
       for (const m of TimetableTextParser.findAll(TIME_RANGE, rowText)) {
-        const t = TimetableTextParser.toMinutes(m, false);
+        const t = TimetableTextParser.toMinutes(m);
         if (t !== null) {
           matches.push(t);
         } else {
@@ -212,7 +212,7 @@ export class TimetableTextParser {
         }
       }
       for (const m of TimetableTextParser.findAll(TIME_RANGE_CN, rowText)) {
-        const t = TimetableTextParser.toMinutes(m, true);
+        const t = TimetableTextParser.toMinutes(m);
         if (t !== null) {
           matches.push(t);
         } else {
@@ -380,9 +380,11 @@ export class TimetableTextParser {
     while (m !== null) {
       out.push({
         h1: Number.parseInt(m[1], 10),
-        m1: Number.parseInt(m[2], 10),
+        // 中文写法里分钟可省略（"8点-9点"）：省略就是 0 分。
+        // 直接 parseInt(undefined) 会得到 NaN，而 NaN 能一路画到界面上（"NaN:NaN"）
+        m1: TimetableTextParser.minuteOf(m[2]),
         h2: Number.parseInt(m[3], 10),
-        m2: Number.parseInt(m[4], 10),
+        m2: TimetableTextParser.minuteOf(m[4]),
         startIndex: m.index,
         endIndex: m.index + m[0].length,
       });
@@ -394,8 +396,17 @@ export class TimetableTextParser {
     return out;
   }
 
+  /** 可选的分组 → 分钟；缺省按 0 */
+  private static minuteOf(group: string | undefined): number {
+    if (group === undefined || group.length === 0) {
+      return 0;
+    }
+    const n: number = Number.parseInt(group, 10);
+    return Number.isNaN(n) ? 0 : n;
+  }
+
   /** 时间区间 → (起始分钟, 结束分钟)；非法（含开始 >= 结束）返回 null */
-  private static toMinutes(m: TimeMatch, isCn: boolean): TimeMatch | null {
+  private static toMinutes(m: TimeMatch): TimeMatch | null {
     const h1 = m.h1;
     const m1 = m.m1;
     const h2 = m.h2;

@@ -50,6 +50,11 @@ export interface BootstrapInput {
   readonly currentVersion: number;
   /** `sqlite_master` 里查到的、属于本应用的现有表名 */
   readonly existingTables: string[];
+  /**
+   * 现有列，形如 `courses.timetableId`。
+   * v1→v2 的 ALTER 按它决定要不要加 —— 迁移**可以重跑**是硬要求（见 `migrations.ts` 的注释）。
+   */
+  readonly existingColumns?: string[];
   /** v1 的 semester 行（调用方在**建表之前**读出来；没有则为 null） */
   readonly legacy: LegacySemester | null;
   /** 当前时间戳，写进 `timetables.createdAt` */
@@ -106,6 +111,16 @@ export function hasAllTables(existingTables: string[], want: string[]): boolean 
   return true;
 }
 
+/** `existingColumns` 里是否包含全部 `want`（形如 `courses.timetableId`） */
+export function hasAllColumns(existingColumns: string[], want: string[]): boolean {
+  for (const c of want) {
+    if (existingColumns.indexOf(c) < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * 决定本次打开库要做什么。
  *
@@ -132,6 +147,21 @@ export function bootstrapPlan(input: BootstrapInput): BootstrapPlan {
   }
 
   if (current === 1) {
+    const cols: string[] = input.existingColumns !== undefined ? input.existingColumns : [];
+    // "迁移事务提交了、版本号没写进去"：表已经是 v2 形状 → 只补版本号，别再跑一遍迁移。
+    // 之前这里**只有 current === 0 有恢复路径**，v1 这种情况会重跑迁移，而旧实现不可重跑
+    // （`INSERT timetables id=1` + 三条 ALTER），于是每次启动都撞 UNIQUE 约束 —— 库没坏但永远打不开。
+    if (
+      hasAllTables(input.existingTables, ['timetables', 'preferences']) &&
+      hasAllColumns(cols, ['courses.timetableId', 'custom_events.timetableId', 'time_slots.timetableId'])
+    ) {
+      return {
+        kind: BOOTSTRAP_REPAIR,
+        fromVersion: current,
+        targetVersion: DB_VERSION,
+        steps: [],
+      };
+    }
     // 旧学期缺失时不能传 null：`migrateV1toV2(null, ...)` 会把 startDateEpochDay 写成 0
     //（= 1970-01-01），而 Android 那边兜底是"当周周一"。这里补齐，两边行为一致。
     const legacy: LegacySemester = input.legacy !== null
@@ -145,7 +175,7 @@ export function bootstrapPlan(input: BootstrapInput): BootstrapPlan {
       kind: BOOTSTRAP_UPGRADE,
       fromVersion: current,
       targetVersion: DB_VERSION,
-      steps: migrateV1toV2(legacy, input.nowMillis),
+      steps: migrateV1toV2(legacy, input.nowMillis, cols),
     };
   }
 

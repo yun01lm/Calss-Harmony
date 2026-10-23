@@ -23,6 +23,16 @@
 - `logic/**`：数据形状、周次位运算、日期推算、输入规范化、教室短形式、冲突判定、格子行数算法、
   课表文本解析、作息文本解析
 - `data/**`：schema / 迁移 / 建库决策 / 业务语义（`ScheduleStore`）/ 模型
+
+**数据层的两条硬约束**（都是"用户数据会丢/会打不开"级别的，改之前先读 `docs/REVIEW.md`）：
+
+1. **迁移步骤必须可重跑**。`PRAGMA user_version` 是独立于事务的一步，存在"事务提交了、版本号没写进去"的窗口。
+   所以每条步骤都要么幂等（`IF NOT EXISTS` / `WHERE NOT EXISTS` / `INSERT OR IGNORE`），
+   要么按"列是否已存在"（`pragma_table_info`）决定要不要 ALTER。
+   `bootstrapPlan` 另有 `repair` 分支：表已是目标形状时只补版本号，不重跑迁移。
+2. **一次写操作的校验在前、SQL 在一个事务里**。`saveCourse` 就是范例：先校验全部掩码，
+   再把 UPDATE / DELETE / INSERT 放进同一个 `runSteps` —— 分开提交时中间失败会留下"没有时段的课"，
+   界面上直接消失，而库里还占着行。
 - `platform/**`：把系统 API 的结果转成 `logic/**`、`data/**` 需要的纯数据
   （如把 `ResultSet` 转成对象数组、把 PDF 文本流转成 `TextLine[]`），以及把产物写回系统
 
@@ -75,7 +85,6 @@ entry/src/main/ets/
 ├── platform/                       Rdb / Picker / Pdf / Ocr 适配器
 ├── data/                           schema、migrations、ScheduleStore
 ├── logic/                          ★ 纯逻辑（对应 Android 的 model/ 与解析层）
-└── common/                         主题、常量、小工具
 ```
 
 ## 启动策略
@@ -116,4 +125,5 @@ Android 版踩过的坑必须原样避开：**程序化翻页（`SwiperControlle
 2. 仅当目标周与"当前显示的周"**不同**时才上报
 
 ✅ 已落地：`logic/WeekSelection.ts`（`shouldReport` + `ANIMATION_GUARD_MS`）与 `tests/week-selection.test.ts`
-（含 8 个**时序复演**用例：首帧、跨多页跳转、跳走后用户再滑、回到本周后再滑回同一页、学期末边界）。
+（11 个用例，其中 **6 个是时序复演**：首帧、跨多页跳转、跳走后用户再滑、回到本周后再滑回同一页、
+学期末边界、连续用户滑动，合计 28 处断言）。

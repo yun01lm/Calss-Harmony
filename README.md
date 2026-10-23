@@ -16,7 +16,7 @@
 | 1 | 数据层：schema / 迁移 / 建库决策 / `SqlRunner` / `ScheduleStore` + `platform/Rdb.ts`（**161 断言 + 实机建库·迁移·持久化**） | ✅ |
 | 2 | 周视图：网格 + 翻周 + 详情卡（**188 断言 + 实机**） | ✅ |
 | 3 | 导入（PDF：选文件→预览→覆盖/合并/新建，**真实课表 24 门**）+ 作息编辑 + 多课表 | ✅ |
-| 3b | 课程编辑：点空白格新建 / 点色块编辑·删除；学期设置（开学日 / 总周数）—— **218 断言 + 实机建·改·删** | ✅ |
+| 3b | 课程编辑：点空白格新建 / 点色块编辑·删除；学期设置（开学日 / 总周数）—— **236 断言 + 实机建·改·删** | ✅ |
 | 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`） | ✅ |
 
 ## 环境
@@ -51,7 +51,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 | 项 | 结果 |
 |---|---|
 | ArkTS 编译 | ✅ `BUILD SUCCESSFUL`（33 tasks，约 8~13 s） |
-| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.15 MB，其中 pdf.js 1.51 MB） |
+| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.16 MB，其中 pdf.js 1.51 MB） |
 | 编译确实在检查类型 | ✅ 故意把 `number` 赋成 `'x'` → `ArkTS Compiler Error` |
 | 关键配置坑 | `modelVersion` 必须 **6.0.0**；SDK 版本串必须是 **"26.0.0"**（不是 `"26.0.0(26)"`） |
 
@@ -67,3 +67,13 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 
 - `docs/ARCHITECTURE.md` —— 分层与模块职责
 - `docs/MIGRATION.md` —— 与 Android 版的模块对照表
+- `docs/COMPAT.md` —— 与 Android 版的行为差异（每条都写了理由）
+- `docs/REVIEW.md` —— **自查记录**：修了什么、什么没修和为什么
+- `docs/ACCEPTANCE.md` / `docs/SPIKES.md` —— 验收数据与 spike 结论
+
+## 校验
+
+```powershell
+npm test                        # 236 条断言，不需要鸿蒙 SDK
+node tools/check-architecture.mjs   # logic/ 与 data/ 的依赖方向 + .ts 扩展名
+```

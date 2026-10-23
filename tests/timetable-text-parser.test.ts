@@ -225,6 +225,17 @@ test('中文时间写法（8点45分-9点35分）也能认', () => {
   assert.deepEqual(periodMap(r).get(1), [525, 575]);
 });
 
+test('中文写法省略"分"时按 0 分算（8点-9点 → 480-540，不是 NaN）', () => {
+  const r = TimetableTextParser.parse(TimetableTextParser.linesFromText('1 8点-9点'));
+  assert.deepEqual(periodMap(r).get(1), [480, 540]);
+  const r2 = TimetableTextParser.parse(TimetableTextParser.linesFromText('1 8点-9点35分'));
+  assert.deepEqual(periodMap(r2).get(1), [480, 575]);
+  for (const p of r.periods) {
+    assert.equal(Number.isNaN(p.startMinute), false, '认出来的时间不能是 NaN');
+    assert.equal(Number.isNaN(p.endMinute), false, '认出来的时间不能是 NaN');
+  }
+});
+
 // ---------------------------------------------------------------- 异常与边界
 test('空输入：明确提示没有识别到文字', () => {
   const r = TimetableTextParser.parse([]);

@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import BuildProfile from 'BuildProfile';
 import { webview } from '@kit.ArkWeb';
 import {
   CourseDraft,
@@ -28,6 +29,7 @@ import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
 import { ScheduleStore } from '../data/ScheduleStore';
+import { mergeCourseItems, type MergeOutcome } from '../data/CourseMerge';
 import {
   Course,
   CourseSchedule,
@@ -194,7 +196,7 @@ struct Index {
             this.weekBar()
             this.pager()
           }
-          if (this.showDev) {
+          if (this.showDev && BuildProfile.DEBUG) {
             this.devPanel()
           }
         }
@@ -261,6 +263,12 @@ struct Index {
           .fontColor('#3B3430')
           .onClick(() => {
             // 开发者入口：连点 5 次打开迁移演练（普通使用碰不到）
+            // 开发者入口：连点 5 次打开迁移演练。
+            // **只在 debug 包里存在**：release 包还带一个"清空全部课程"的一键按钮，
+            // 那是数据事故的种子（模拟器上真的有 6 次点击就抹掉整张课表的路径）
+            if (!BuildProfile.DEBUG) {
+              return;
+            }
             this.titleTaps++;
             if (this.titleTaps >= 5) {
               this.titleTaps = 0;
@@ -307,7 +315,7 @@ struct Index {
         .height(30)
         .backgroundColor('#F3E6DC')
         .fontColor('#B4664C')
-        .enabled(!this.importBusy)
+        .enabled(!this.importBusy && !this.pdfRunning)
         .onClick(() => {
           this.startImport();
         })
@@ -980,7 +988,7 @@ struct Index {
               .layoutWeight(1)
               .backgroundColor('#E07A5F')
               .onClick(() => {
-                this.writeSamples();
+                this.confirmWriteSamples();
               })
             Button('清空全部课程')
               .fontSize(11)
@@ -988,7 +996,7 @@ struct Index {
               .layoutWeight(1)
               .backgroundColor('#BDB3AB')
               .onClick(() => {
-                this.clearAllCourses();
+                this.confirmClearCourses();
               })
           }
           .width('100%')
@@ -1014,7 +1022,7 @@ struct Index {
             .height(32)
             .width('100%')
             .backgroundColor('#7FA98B')
-            .enabled(!this.spiking)
+            .enabled(!this.spiking && !this.importOpen)
             .onClick(() => {
               this.runSpikes();
             })
@@ -1040,7 +1048,7 @@ struct Index {
             .height(32)
             .width('100%')
             .backgroundColor('#9B8AC4')
-            .enabled(!this.pdfRunning)
+            .enabled(!this.pdfRunning && !this.importOpen)
             .onClick(() => {
               this.runPdfSpike();
             })
@@ -1114,6 +1122,8 @@ struct Index {
     }
     this.pdfRunning = true;
     this.pdfLines = [];
+    // 明确目的：否则上一次导入留下的 'import' 会把 spike 的回传送进导入流程
+    this.pdfPurpose = 'spike';
     try {
       const ready: boolean = await this.ensureWeb();
       if (!ready) {
@@ -1125,6 +1135,7 @@ struct Index {
       const base64: string = await PdfJs.readRawBase64(ctx as common.UIAbilityContext, 'spike-grid.pdf');
       const info: SpikeLine = { label: 'PDF 已读入并送去 pdf.js', ok: base64.length > 0, detail: base64.length + ' 字符(base64)' };
       this.pdfLines = [info];
+      await this.runJs(PdfJs.CLEAR_SCRIPT);
       this.webController.runJavaScript(PdfJs.extractCall(base64));
       const payload: string = await this.pollPdfResult(60000);
       if (payload.length === 0) {
@@ -1166,18 +1177,36 @@ struct Index {
   }
 
   /** 执行一段 JS 并取它的返回值（失败/无返回时给 null） */
+  /** 单次 `runJavaScript` 的硬超时：回调丢了也不能让 await 永远挂着 */
+  private static readonly JS_TIMEOUT_MS: number = 5000;
+
   private runJs(script: string): Promise<string | null> {
     return new Promise<string | null>((resolve) => {
+      let finished: boolean = false;
+      const finish = (value: string | null): void => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        resolve(value);
+      };
+      // 没有这个计时器的话，Web 渲染进程一旦崩掉，回调永远不来：
+      // "解析中…" 会一直转，取消按钮被禁用、返回键被吞，用户只能杀进程
+      const timer: number = setTimeout(() => {
+        finish(null);
+      }, Index.JS_TIMEOUT_MS);
       try {
         this.webController.runJavaScript(script, (err, result) => {
+          clearTimeout(timer);
           if (err !== null && err !== undefined) {
-            resolve(null);
+            finish(null);
             return;
           }
-          resolve(result === undefined ? null : result);
+          finish(result === undefined ? null : result);
         });
       } catch (e) {
-        resolve(null);
+        clearTimeout(timer);
+        finish(null);
       }
     });
   }
@@ -1351,6 +1380,8 @@ struct Index {
       }
       this.importStage = '解析中…';
       this.pdfPurpose = 'import';
+      // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
+      await this.runJs(PdfJs.CLEAR_SCRIPT);
       this.webController.runJavaScript(PdfJs.extractCall(base64));
       const payload: string = await this.pollPdfResult(60000);
       if (payload.length === 0) {
@@ -1388,10 +1419,22 @@ struct Index {
       return;
     }
 
-    this.importCourses = this.toImportItems(best);
+    // 解析器是"一格一条"输出：一门课上两次会产出两条 RawCourse，必须按
+    // 「名称+教师+地点」归并成一门课多时段（Android 的 merge() 就是干这个）
+    const merged: MergeOutcome = mergeCourseItems(this.toImportItems(best));
+    this.importCourses = merged.items;
     this.importFormat = best.format;
     this.importCount = this.importCourses.length;
-    this.importWarnings = best.warnings;
+    const warnings: string[] = best.warnings.slice();
+    if (merged.dropped.length > 0) {
+      // 没有一条能画的时段（周次一个都没认出来）—— 留在库里就是"看不见的数据"
+      const names: string = merged.dropped.slice(0, 3).join('、');
+      warnings.push(
+        '有 ' + merged.dropped.length + ' 门课没认出上课周次，已跳过：' + names +
+          (merged.dropped.length > 3 ? ' 等' : '')
+      );
+    }
+    this.importWarnings = warnings;
 
     const preview: string[] = [];
     const n: number = Math.min(6, this.importCourses.length);
@@ -1477,10 +1520,13 @@ struct Index {
       }
       this.importOpen = false;
       this.importBusy = false;
+      // 导入结束就把通道的目的拨回 spike：否则开发者面板的"跑 PDF spike"会把回传送进导入流程
+      this.pdfPurpose = 'spike';
       await this.load();
     } catch (e) {
       const err = e as Error;
       this.importBusy = false;
+      this.pdfPurpose = 'spike';
       this.importError = '写入失败：' + err.message;
       this.importStage = '预览';
     }
@@ -1877,17 +1923,6 @@ struct Index {
       this.getUIContext().getPromptAction().showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
       return;
     }
-    const schedules: CourseSchedule[] = [];
-    for (const s of payload.schedules) {
-      schedules.push({
-        id: 0,
-        courseId: 0,
-        dayOfWeek: s.dayOfWeek,
-        startPeriod: s.startPeriod,
-        endPeriod: s.endPeriod,
-        weekMask: maskToDb(s.weekMask),
-      });
-    }
     // 编辑时保留本面板不编辑的字段（配色/类别/备注）：
     // 从 PDF 导入的课类别存在 category 里，不能因为改了一次教师就被清空
     const base: Course | null = this.findCourse(this.editorCourseId);
@@ -1902,6 +1937,19 @@ struct Index {
       note: base === null ? '' : base.note,
     };
     try {
+      // maskToDb 也放进 try：越界时它会抛错，放在 try 外面就变成 unhandled rejection，
+      // 界面表现是"点了保存什么都没发生"（没有 toast、表单也不动）
+      const schedules: CourseSchedule[] = [];
+      for (const s of payload.schedules) {
+        schedules.push({
+          id: 0,
+          courseId: 0,
+          dayOfWeek: s.dayOfWeek,
+          startPeriod: s.startPeriod,
+          endPeriod: s.endPeriod,
+          weekMask: maskToDb(s.weekMask),
+        });
+      }
       await store.saveCourse(course, schedules);
       this.editorOpen = false;
       await this.refreshAfterEdit();
@@ -2184,6 +2232,45 @@ struct Index {
    * 故意让「软件工程」和「大学英语」撞在周一 3-4 节：这样才能看到**并排双道 + 冲突标记**，
    * 否则这个分支永远没有数据能验到。
    */
+  private confirmWriteSamples(): void {
+    // 这两个按钮动的是**真库**：都是开发期工具，但仍要二次确认 ——
+    // 一次误触就往用户的课表里塞 4 门示例课/清空整张表，没有撤销
+    this.getUIContext().showAlertDialog({
+      title: '写入示例课',
+      message: '会往当前课表插入 4 门示例课程（不删除已有课程）。确定吗？',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        },
+      },
+      secondaryButton: {
+        value: '写入',
+        action: () => {
+          this.writeSamples();
+        },
+      },
+    });
+  }
+
+  private confirmClearCourses(): void {
+    this.getUIContext().showAlertDialog({
+      title: '清空全部课程',
+      message: '当前课表里的课程会全部删除（作息与自定义安排不动），不能撤销。',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        },
+      },
+      secondaryButton: {
+        value: '清空',
+        fontColor: '#C62828',
+        action: () => {
+          this.clearAllCourses();
+        },
+      },
+    });
+  }
+
   private async writeSamples(): Promise<void> {
     try {
       const store: ScheduleStore = await this.openStore();

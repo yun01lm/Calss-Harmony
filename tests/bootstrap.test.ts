@@ -18,6 +18,7 @@ import {
   defaultSlots,
 } from '../entry/src/main/ets/data/schema.ts';
 import type { MigrationStep } from '../entry/src/main/ets/data/migrations.ts';
+import { migrateV1toV2 } from '../entry/src/main/ets/data/migrations.ts';
 import {
   BOOTSTRAP_FRESH,
   BOOTSTRAP_NOOP,
@@ -115,10 +116,30 @@ function planFor(
   return bootstrapPlan({
     currentVersion,
     existingTables: existing,
+    existingColumns: columnsOf(db),
     legacy,
     nowMillis: NOW,
     defaultStartEpochDay: MONDAY,
   });
+}
+
+/** 现有列（形如 `courses.timetableId`），bootstrap 用它决定要不要 ALTER */
+function columnsOf(db: DatabaseSync): string[] {
+  const out: string[] = [];
+  for (const table of ['courses', 'custom_events', 'time_slots']) {
+    let rows: Array<Record<string, unknown>> = [];
+    try {
+      rows = db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<
+        Record<string, unknown>
+      >;
+    } catch (e) {
+      rows = [];
+    }
+    for (const r of rows) {
+      out.push(table + '.' + String(r.name));
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- fresh
@@ -299,6 +320,56 @@ test('repair：版本号是 0 但表已在 → 只补版本号，不重复播种
   assert.deepEqual(plan.steps, []);
   assert.equal(count(db, 'SELECT COUNT(*) FROM timetables'), 1);
   assert.equal(count(db, 'SELECT COUNT(*) FROM time_slots'), 12);
+});
+
+test('repair：版本号是 1 但表已经是 v2 形状 → 只补版本号（不能重跑迁移）', () => {
+  const db = makeV1Db(true);
+  // 先真的迁一遍，再把版本号按回 1，模拟"迁移提交了、PRAGMA 没写进去"
+  runSteps(db, migrateV1toV2({ name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 }, NOW, []));
+  db.exec('PRAGMA user_version = 1');
+
+  const plan = planFor(db, 1, { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 });
+  assert.equal(plan.kind, BOOTSTRAP_REPAIR);
+  assert.deepEqual(plan.steps, []);
+  // 关键：再来一次也不会撞 UNIQUE / duplicate column
+  runSteps(db, plan.steps);
+  assert.equal(count(db, 'SELECT COUNT(*) FROM timetables'), 1);
+});
+
+test('v1→v2 的步骤本身可以重跑：跑两遍结果一致，不抛错', () => {
+  const db = makeV1Db(true);
+  const legacy = { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 };
+  // 模拟"列已经加好了"的重跑：把当前列传进去（真实调用方就是这么传的）
+  runSteps(db, migrateV1toV2(legacy, NOW, columnsOf(db)));
+  const firstCourses = count(db, 'SELECT COUNT(*) FROM courses');
+  const firstTimetables = count(db, 'SELECT COUNT(*) FROM timetables');
+  const firstSlots = count(db, 'SELECT COUNT(*) FROM time_slots');
+
+  runSteps(db, migrateV1toV2(legacy, NOW, columnsOf(db)));
+
+  assert.equal(count(db, 'SELECT COUNT(*) FROM courses'), firstCourses);
+  assert.equal(count(db, 'SELECT COUNT(*) FROM timetables'), firstTimetables);
+  assert.equal(count(db, 'SELECT COUNT(*) FROM time_slots'), firstSlots);
+  assert.equal(count(db, 'SELECT COUNT(*) FROM courses WHERE timetableId = 1'), firstCourses);
+});
+
+test('v1→v2 重跑不会把第 2 张课表的课搬回第 1 张（回填只碰 timetableId = 0）', () => {
+  const db = makeV1Db(true);
+  const legacy = { name: '2025 秋季', startDateEpochDay: 20321, totalWeeks: 18 };
+  runSteps(db, migrateV1toV2(legacy, NOW, columnsOf(db)));
+  db.prepare(
+    'INSERT INTO timetables (name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
+      'VALUES (?, ?, ?, 0, ?)'
+  ).run('第二张', 20321, 18, NOW);
+  db.prepare(
+    'INSERT INTO courses (timetableId, name, teacher, location, color, category, note) ' +
+      'VALUES (2, ?, ?, ?, 0, ?, ?)'
+  ).run('只属于第二张的课', '', '', '', '');
+
+  runSteps(db, migrateV1toV2(legacy, NOW, columnsOf(db)));
+
+  assert.equal(count(db, 'SELECT COUNT(*) FROM courses WHERE timetableId = 2'), 1);
+  assert.equal(count(db, 'SELECT COUNT(*) FROM courses WHERE timetableId = 1'), 1);
 });
 
 // ---------------------------------------------------------------- 拒绝
