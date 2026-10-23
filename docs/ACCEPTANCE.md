@@ -34,7 +34,7 @@
 
 | 项 | 大小 |
 |---|---|
-| HAP（release，未签名） | **2.21 MB** |
+| HAP（release，未签名） | **2.15 MB**（2,253,167 字节） |
 | ├─ pdf.js 3.11 legacy（`pdf.min.js` + worker） | 1.51 MB |
 | ├─ 内联中文 CMap（`cmaps-data.js`） | 182 KB |
 | └─ 应用自身（ArkTS 字节码 + 资源） | 约 0.5 MB |
@@ -57,7 +57,7 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 
 | 项 | 结果 |
 |---|---|
-| Node 断言 | **199 条 / 13 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
+| Node 断言 | **218 条 / 16 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
 | 架构守卫 | `logic/`、`data/` 零平台依赖；内部 import 必须带 `.ts`（CI 里两条 grep 守卫） |
 | ArkTS 构建 | `BUILD SUCCESSFUL`（debug 与 release 都验过） |
 | CI | GitHub Actions：每次 push 跑全部断言 + 两条架构守卫 |

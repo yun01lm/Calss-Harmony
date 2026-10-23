@@ -1,8 +1,10 @@
-﻿import { common } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import {
+  CourseDraft,
   GridFormatParser,
+  InputNorm,
   ListFormatParser,
   Minutes,
   PdfRunText,
@@ -11,15 +13,36 @@ import {
   WeekMasks,
   WeekSelection,
 } from '../logic';
-import { type CourseLike, type EventLike, type ParseResult, type PdfExtractResult, type ScheduleLike, type WeekItem } from '../logic';
+import {
+  type CourseDraftPayload,
+  type CourseLike,
+  type DraftRow,
+  type EventLike,
+  type ParseResult,
+  type PdfExtractResult,
+  type ScheduleLike,
+  type WeekItem,
+} from '../logic';
 import { Rdb } from '../platform/Rdb';
 import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
 import { ScheduleStore } from '../data/ScheduleStore';
-import { Course, CourseSchedule, CourseWithSchedules, maskToDb, Snapshot, TimeSlot, Timetable } from '../data/models';
+import {
+  Course,
+  CourseSchedule,
+  CourseWithSchedules,
+  maskFromDb,
+  maskToDb,
+  MAX_TOTAL_WEEKS,
+  MIN_TOTAL_WEEKS,
+  Snapshot,
+  TimeSlot,
+  Timetable,
+} from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
+import { CourseEditor } from '../view/CourseEditor';
 
 /**
  * 主页：周视图。
@@ -61,6 +84,24 @@ struct Index {
   // ---------------- 详情卡
   @State detailTitle: string = '';
   @State detailLines: string[] = [];
+  /** 详情卡对应的课程 id；0 = 自定义安排（没有课程可编辑） */
+  @State detailCourseId: number = 0;
+
+  // ---------------- 课程编辑面板
+  @State editorOpen: boolean = false;
+  @State editorTitle: string = '添加课程';
+  /** 0 = 新建；> 0 = 正在编辑这门课（保存时保留它的配色/类别/备注） */
+  @State editorCourseId: number = 0;
+  @State editorName: string = '';
+  @State editorTeacher: string = '';
+  @State editorLocation: string = '';
+  @State editorRows: DraftRow[] = [];
+
+  // ---------------- 学期设置（开学日 / 总周数）
+  @State semesterOpen: boolean = false;
+  @State semesterStartText: string = '';
+  @State semesterWeeksText: string = '';
+  @State semesterError: string = '';
 
   // ---------------- 开发者入口（标题连点 5 次）：迁移演练
   private titleTaps: number = 0;
@@ -175,6 +216,31 @@ struct Index {
         this.textDialogCard()
       }
 
+      if (this.semesterOpen) {
+        this.semesterCard()
+      }
+
+      if (this.editorOpen) {
+        CourseEditor({
+          periodCount: this.periodCount,
+          editorTitle: this.editorTitle,
+          initialName: this.editorName,
+          initialTeacher: this.editorTeacher,
+          initialLocation: this.editorLocation,
+          initialRows: this.editorRows,
+          canDelete: this.editorCourseId > 0,
+          onSubmit: (payload: CourseDraftPayload) => {
+            this.saveCoursePayload(payload);
+          },
+          onDelete: () => {
+            this.deleteEditedCourse();
+          },
+          onCancel: () => {
+            this.editorOpen = false;
+          },
+        })
+      }
+
       // pdf.js 容器：1x1 且透明，**用时才创建**（常驻会让冷启动多 ~0.5s）
       if (this.webRequested) {
         this.hiddenWeb()
@@ -272,12 +338,15 @@ struct Index {
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor('#E07A5F')
-        Text(this.weekRangeText())
+        Text(this.weekRangeText() + '  学期设置›')
           .fontSize(10)
-          .fontColor('#7A6E66')
+          .fontColor('#B4664C')
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Center)
+      .onClick(() => {
+        this.openSemester();
+      })
 
       Button('›')
         .width(36)
@@ -352,6 +421,7 @@ struct Index {
       if (WeekSelection.shouldReport(pageWeek, this.selectedWeek, this.autoScrolling)) {
         this.selectedWeek = pageWeek;
         this.followingCurrentWeek = false;
+        this.closeDetail();
       }
     })
   }
@@ -361,18 +431,25 @@ struct Index {
   @Builder
   detailCard() {
     Column({ space: 6 }) {
-      Row() {
+      Row({ space: 12 }) {
         Text(this.detailTitle)
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
           .fontColor('#3B3430')
           .layoutWeight(1)
+        if (this.detailCourseId > 0) {
+          Text('编辑')
+            .fontSize(12)
+            .fontColor('#5B7C99')
+            .onClick(() => {
+              this.openCourseEditorById(this.detailCourseId);
+            })
+        }
         Text('关闭')
           .fontSize(12)
           .fontColor('#E07A5F')
           .onClick(() => {
-            this.detailTitle = '';
-            this.detailLines = [];
+            this.closeDetail();
           })
       }
       .width('100%')
@@ -643,6 +720,85 @@ struct Index {
             .backgroundColor('#E07A5F')
             .onClick(() => {
               this.confirmTextDialog();
+            })
+        }
+        .width('100%')
+      }
+      .width('86%')
+      .padding(16)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
+  }
+
+  /** 学期设置：开学日 + 总周数（点周视图中间那行「第 N 周 · 日期」打开） */
+  @Builder
+  semesterCard() {
+    Column() {
+      Column({ space: 8 }) {
+        Text('学期设置')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .width('100%')
+        Text('开学日就是第 1 周的周一。改完「第几周」会立刻跟着变。')
+          .fontSize(10)
+          .fontColor('#A89C93')
+          .width('100%')
+
+        Text('开学日')
+          .fontSize(11)
+          .fontColor('#7A6E66')
+          .width('100%')
+        TextInput({ text: this.semesterStartText, placeholder: '2026-09-07' })
+          .fontSize(14)
+          .height(38)
+          .backgroundColor('#F5EFEA')
+          .onChange((value: string) => {
+            this.semesterStartText = value;
+          })
+
+        Text('总周数（' + MIN_TOTAL_WEEKS + '-' + MAX_TOTAL_WEEKS + '）')
+          .fontSize(11)
+          .fontColor('#7A6E66')
+          .width('100%')
+        TextInput({ text: this.semesterWeeksText, placeholder: '20' })
+          .fontSize(14)
+          .height(38)
+          .type(InputType.Number)
+          .backgroundColor('#F5EFEA')
+          .onChange((value: string) => {
+            this.semesterWeeksText = value;
+          })
+
+        if (this.semesterError.length > 0) {
+          Text(this.semesterError)
+            .fontSize(11)
+            .fontColor('#C62828')
+            .width('100%')
+        }
+
+        Row({ space: 8 }) {
+          Button('取消')
+            .fontSize(12)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#EFE6DF')
+            .fontColor('#7A6E66')
+            .onClick(() => {
+              this.semesterOpen = false;
+            })
+          Button('保存')
+            .fontSize(12)
+            .height(32)
+            .layoutWeight(1)
+            .backgroundColor('#E07A5F')
+            .onClick(() => {
+              this.applySemester();
             })
         }
         .width('100%')
@@ -1590,6 +1746,8 @@ struct Index {
 
   private goToWeek(week: number): void {
     const target: number = WeekSelection.clamp(week, this.totalWeeks);
+    // 换了周，详情卡描述的就是"上一周的某门课"了：直接收起，别留一张对不上的卡
+    this.closeDetail();
     if (target === this.selectedWeek) {
       return;
     }
@@ -1613,38 +1771,240 @@ struct Index {
     }, WeekSelection.ANIMATION_GUARD_MS);
   }
 
+  // ---------------------------------------------------------------- 课程编辑
+
+  /** 点空白格：新建课程，预填这一格的星期与节次 */
   private onCellTap(dayOfWeek: number, period: number): void {
-    const dayName: string = ['一', '二', '三', '四', '五', '六', '日'][dayOfWeek - 1];
-    promptAction.showToast({
-      message: `第 ${this.selectedWeek} 周 · 周${dayName} · 第 ${period} 节（新建课程在阶段 3）`,
-      duration: 1500,
+    this.editorCourseId = 0;
+    this.editorTitle = '添加课程';
+    this.editorName = '';
+    this.editorTeacher = '';
+    this.editorLocation = '';
+    this.editorRows = [CourseDraft.newRow(dayOfWeek, period, this.periodCount)];
+    this.closeDetail();
+    this.editorOpen = true;
+  }
+
+  /** 编辑已有课程：把它现有的每一段时段都填进表单 */
+  private openCourseEditorById(courseId: number): void {
+    const snap: Snapshot | null = this.snapshot;
+    const course: Course | null = this.findCourse(courseId);
+    if (snap === null || course === null) {
+      promptAction.showToast({ message: '这门课已经不在课表里了', duration: 1500 });
+      return;
+    }
+    const rows: DraftRow[] = [];
+    for (const s of snap.schedules) {
+      if (s.courseId !== courseId) {
+        continue;
+      }
+      rows.push(
+        CourseDraft.row(
+          s.dayOfWeek,
+          s.startPeriod,
+          s.endPeriod,
+          WeekMasks.format(maskFromDb(s.weekMask))
+        )
+      );
+    }
+    if (rows.length === 0) {
+      // 理论上不会有：课程没有时段就是画不出来的孤儿行。真遇到了也要能编辑
+      rows.push(CourseDraft.newRow(1, 1, this.periodCount));
+    }
+    this.editorCourseId = courseId;
+    this.editorTitle = '编辑课程';
+    this.editorName = course.name;
+    this.editorTeacher = course.teacher;
+    this.editorLocation = course.location;
+    this.editorRows = rows;
+    this.closeDetail();
+    this.editorOpen = true;
+  }
+
+  private async saveCoursePayload(payload: CourseDraftPayload): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    if (store === null) {
+      promptAction.showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
+      return;
+    }
+    const schedules: CourseSchedule[] = [];
+    for (const s of payload.schedules) {
+      schedules.push({
+        id: 0,
+        courseId: 0,
+        dayOfWeek: s.dayOfWeek,
+        startPeriod: s.startPeriod,
+        endPeriod: s.endPeriod,
+        weekMask: maskToDb(s.weekMask),
+      });
+    }
+    // 编辑时保留本面板不编辑的字段（配色/类别/备注）：
+    // 从 PDF 导入的课类别存在 category 里，不能因为改了一次教师就被清空
+    const base: Course | null = this.findCourse(this.editorCourseId);
+    const course: Course = {
+      id: this.editorCourseId,
+      timetableId: base === null ? this.currentTimetableId() : base.timetableId,
+      name: payload.name,
+      teacher: payload.teacher,
+      location: payload.location,
+      color: base === null ? 0 : base.color,
+      category: base === null ? '' : base.category,
+      note: base === null ? '' : base.note,
+    };
+    try {
+      await store.saveCourse(course, schedules);
+      this.editorOpen = false;
+      await this.refreshAfterEdit();
+      // 当前看的这一周可能没有这门课（比如把周次改成 1-8，而你正停在第 9 周）：
+      // 跳到它第一次出现的那一周，否则用户会以为"保存了但什么都没发生"
+      let union: bigint = 0n;
+      for (const s of payload.schedules) {
+        union = union | s.weekMask;
+      }
+      if (!WeekMasks.contains(union, this.selectedWeek)) {
+        for (let w = 1; w <= this.totalWeeks; w++) {
+          if (WeekMasks.contains(union, w)) {
+            this.goToWeek(w);
+            break;
+          }
+        }
+      }
+      promptAction.showToast({
+        message: this.editorCourseId > 0 ? '已更新：' + payload.name : '已添加：' + payload.name,
+        duration: 1500,
+      });
+      this.editorCourseId = 0;
+    } catch (e) {
+      promptAction.showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
+    }
+  }
+
+  private async deleteEditedCourse(): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    const id: number = this.editorCourseId;
+    if (store === null || id <= 0) {
+      return;
+    }
+    try {
+      await store.deleteCourse(id);
+      this.editorOpen = false;
+      this.editorCourseId = 0;
+      await this.refreshAfterEdit();
+      promptAction.showToast({ message: '已删除该课程', duration: 1500 });
+    } catch (e) {
+      promptAction.showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
+    }
+  }
+
+  private findCourse(id: number): Course | null {
+    const snap: Snapshot | null = this.snapshot;
+    if (snap === null || id <= 0) {
+      return null;
+    }
+    for (const c of snap.courses) {
+      if (c.id === id) {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  private currentTimetableId(): number {
+    const snap: Snapshot | null = this.snapshot;
+    return snap === null || snap.timetable === null ? 0 : snap.timetable.id;
+  }
+
+  private closeDetail(): void {
+    this.detailTitle = '';
+    this.detailLines = [];
+    this.detailCourseId = 0;
+  }
+
+  // ---------------------------------------------------------------- 学期设置
+
+  private openSemester(): void {
+    this.semesterStartText = WeekCalculator.isoDate(this.semesterStart);
+    this.semesterWeeksText = String(this.totalWeeks);
+    this.semesterError = '';
+    this.semesterOpen = true;
+  }
+
+  private async applySemester(): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    const id: number = this.currentTimetableId();
+    if (store === null || id === 0) {
+      this.semesterError = '课表还没打开，稍后再试';
+      return;
+    }
+    // 宽容：2026/9/7、2026.9.7、20260907 都认
+    const iso: string | null = InputNorm.date(this.semesterStartText);
+    if (iso === null) {
+      this.semesterError = '开学日填不对。用 2026-09-07 这种写法';
+      return;
+    }
+    const epochDay: number | null = WeekCalculator.epochDayOfIso(iso);
+    if (epochDay === null) {
+      this.semesterError = '这一天不存在：' + iso;
+      return;
+    }
+    const weeks: number | null = InputNorm.int(this.semesterWeeksText);
+    if (weeks === null || weeks < MIN_TOTAL_WEEKS || weeks > MAX_TOTAL_WEEKS) {
+      this.semesterError = '总周数要填 ' + MIN_TOTAL_WEEKS + ' 到 ' + MAX_TOTAL_WEEKS + ' 之间的整数';
+      return;
+    }
+    try {
+      await store.updateTimetableSemester(id, epochDay, weeks);
+      this.semesterOpen = false;
+      await this.refreshAfterEdit();
+      // 开学日变了，"第几周"就变了：直接跳回本周，别停在原来那一页
+      this.goToCurrentWeek();
+      promptAction.showToast({ message: '学期设置已更新', duration: 1500 });
+    } catch (e) {
+      this.semesterError = '保存失败：' + (e as Error).message;
+    }
+  }
+
+  /** 数据（课程/学期/作息）变了之后重算派生状态；不动 selectedWeek，除非它已越界 */
+  private async refreshAfterEdit(): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    if (store === null) {
+      return;
+    }
+    const snap: Snapshot = await store.snapshot();
+    this.snapshot = snap;
+    const total: number = snap.timetable === null ? 20 : Math.max(1, snap.timetable.totalWeeks);
+    const start: number = snap.timetable === null ? 0 : snap.timetable.startDateEpochDay;
+    this.todayEpochDay = WeekCalculator.todayEpochDay();
+    this.totalWeeks = total;
+    this.semesterStart = start;
+    this.currentWeek = Math.min(Math.max(WeekCalculator.currentWeek(start, this.todayEpochDay), 1), total);
+    if (this.selectedWeek > total) {
+      this.selectedWeek = total;
+    }
+    this.weeks = WeekItems.build({
+      courses: Index.toCourseLikes(snap.courses),
+      schedules: Index.toScheduleLikes(snap),
+      events: Index.toEventLikes(snap),
+      totalWeeks: total,
     });
+    this.periodCount = WeekItems.periodCount(snap.slots, this.weeks);
   }
 
   private onItemTap(item: WeekItem): void {
+    this.detailCourseId = 0;
     if (item.kind === WeekItems.KIND_EVENT) {
       this.detailTitle = item.title;
       this.detailLines = ['自定义安排', '备注：' + (item.subtitle.length === 0 ? '（无）' : item.subtitle)];
       return;
     }
-    const snap: Snapshot | null = this.snapshot;
-    let teacher: string = '';
-    let location: string = '';
-    if (snap !== null) {
-      for (const c of snap.courses) {
-        if (c.id === item.id) {
-          teacher = c.teacher;
-          location = c.location;
-          break;
-        }
-      }
-    }
+    this.detailCourseId = item.id;
+    const course: Course | null = this.findCourse(item.id);
     this.detailTitle = item.title;
     this.detailLines = [
       '周' + ['一', '二', '三', '四', '五', '六', '日'][item.dayOfWeek - 1] +
         ` 第 ${item.startPeriod}-${item.endPeriod} 节`,
-      '教师：' + (teacher.length === 0 ? '（未填）' : teacher),
-      '教室：' + (location.length === 0 ? '（未填）' : location),
+      '教师：' + (course === null || course.teacher.length === 0 ? '（未填）' : course.teacher),
+      '教室：' + (course === null || course.location.length === 0 ? '（未填）' : course.location),
       '周次：' + this.weekMaskTextOf(item),
     ];
     if (item.conflicts.length > 0) {

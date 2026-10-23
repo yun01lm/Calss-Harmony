@@ -74,6 +74,28 @@ export class WeekCalculator {
     return WeekCalculator.mondayOfEpochDay(today) - n * WeekCalculator.DAYS_PER_WEEK;
   }
 
+  /**
+   * "yyyy-MM-dd" → epochDay，`isoDate` 的逆运算。非法或不存在的日期（2 月 30 日）返回 null。
+   *
+   * 回读校验是必须的：`Date.UTC(2026, 1, 30)` 会静默滚成 3 月 2 日，
+   * 于是"填错的开学日"会变成一个看着正常的日期，把整学期的周次都推错。
+   */
+  static epochDayOfIso(iso: string): number | null {
+    const m: RegExpExecArray | null = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
+    if (m === null) {
+      return null;
+    }
+    const y: number = Number.parseInt(m[1], 10);
+    const mo: number = Number.parseInt(m[2], 10);
+    const d: number = Number.parseInt(m[3], 10);
+    const epochDay: number = WeekCalculator.epochDayOf(y, mo, d);
+    const back: Ymd = WeekCalculator.dateOf(epochDay);
+    if (back.year !== y || back.month !== mo || back.day !== d) {
+      return null;
+    }
+    return epochDay;
+  }
+
   /** "yyyy-MM-dd"（与 Android 的 ISO 输出一致，用于界面回填与日志） */
   static isoDate(epochDay: number): string {
     const ymd = WeekCalculator.dateOf(epochDay);
