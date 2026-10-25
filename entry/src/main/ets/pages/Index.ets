@@ -4,6 +4,7 @@ import BuildProfile from 'BuildProfile';
 import { webview } from '@kit.ArkWeb';
 import {
   CourseDraft,
+  EventDraft,
   GridFormatParser,
   InputNorm,
   ListFormatParser,
@@ -18,6 +19,7 @@ import {
   type CourseDraftPayload,
   type CourseLike,
   type DraftRow,
+  type EventDraftResult,
   type EventLike,
   type ParseResult,
   type PdfExtractResult,
@@ -35,6 +37,7 @@ import {
   Course,
   CourseSchedule,
   CourseWithSchedules,
+  CustomEvent,
   maskFromDb,
   maskToDb,
   MAX_TOTAL_WEEKS,
@@ -45,6 +48,7 @@ import {
 } from '../data/models';
 import { WeekGrid } from '../view/WeekGrid';
 import { CourseEditor } from '../view/CourseEditor';
+import { EventEditor } from '../view/EventEditor';
 
 /**
  * 主页：周视图。
@@ -86,8 +90,34 @@ struct Index {
   // ---------------- 详情卡
   @State detailTitle: string = '';
   @State detailLines: string[] = [];
-  /** 详情卡对应的课程 id；0 = 自定义安排（没有课程可编辑） */
+  /** 详情卡对应的课程 id；0 = 当前这张卡不是课程（自定义安排或只有标题） */
   @State detailCourseId: number = 0;
+  /** > 0 表示详情卡当前描述的是一条自定义安排（课程与安排不会同时成立） */
+  @State detailEventId: number = 0;
+
+  // ---------------- 点空白格：先问"课程还是自定义安排"
+  @State addChoiceOpen: boolean = false;
+  @State addChoiceDay: number = 1;
+  @State addChoicePeriod: number = 1;
+
+  // ---------------- 自定义安排编辑面板
+  @State eventEditorOpen: boolean = false;
+  @State eventEditorId: number = 0;
+  @State eventHeading: string = '添加安排';
+  @State eventTitle: string = '';
+  @State eventNote: string = '';
+  @State eventDay: number = 1;
+  @State eventStart: number = 1;
+  @State eventEnd: number = 2;
+  @State eventWeeks: string = '1-16';
+  /**
+   * 编辑已有安排时**透传**的字段：颜色与自由钟点（startMinute/endMinute）。
+   * 本版界面不编辑它们，但"编辑一次就被清空"是不行的 —— Android 侧同样用
+   * `loaded.copy(...)` 保留。不是 `@State`：它们不参与任何渲染。
+   */
+  private eventColor: number = 0;
+  private eventStartMinute: number | null = null;
+  private eventEndMinute: number | null = null;
 
   // ---------------- 课程编辑面板
   @State editorOpen: boolean = false;
@@ -210,6 +240,10 @@ struct Index {
         this.detailCard()
       }
 
+      if (this.addChoiceOpen) {
+        this.addChoiceCard()
+      }
+
       if (this.importOpen) {
         this.importSheet()
       }
@@ -239,6 +273,29 @@ struct Index {
           },
           onCancel: () => {
             this.editorOpen = false;
+          },
+        })
+      }
+
+      if (this.eventEditorOpen) {
+        EventEditor({
+          periodCount: this.periodCount,
+          heading: this.eventHeading,
+          initialTitle: this.eventTitle,
+          initialNote: this.eventNote,
+          initialDay: this.eventDay,
+          initialStart: this.eventStart,
+          initialEnd: this.eventEnd,
+          initialWeeks: this.eventWeeks,
+          canDelete: this.eventEditorId > 0,
+          onSubmit: (result: EventDraftResult) => {
+            this.saveEventPayload(result);
+          },
+          onDelete: () => {
+            this.deleteEditedEvent();
+          },
+          onCancel: () => {
+            this.eventEditorOpen = false;
           },
         })
       }
@@ -381,7 +438,7 @@ struct Index {
             this.goToCurrentWeek();
           })
       } else {
-        Text(this.isEmptyTimetable() ? '还没有课程' : '本周')
+        Text(this.isEmptyTimetable() ? '还没有课程或安排' : '本周')
           .fontSize(10)
           .fontColor('#A89C93')
       }
@@ -452,6 +509,13 @@ struct Index {
             .onClick(() => {
               this.openCourseEditorById(this.detailCourseId);
             })
+        } else if (this.detailEventId > 0) {
+          Text('编辑')
+            .fontSize(12)
+            .fontColor('#5B7C99')
+            .onClick(() => {
+              this.openEventEditorById(this.detailEventId);
+            })
         }
         Text('关闭')
           .fontSize(12)
@@ -468,6 +532,66 @@ struct Index {
           .fontColor('#7A6E66')
           .width('100%')
       }, (line: string, index: number) => 'd' + index)
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor('#FFFFFF')
+    .borderRadius({ topLeft: 16, topRight: 16 })
+    .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+  }
+
+  // ---------------------------------------------------------------- 点空白格：选类型
+
+  /**
+   * 点空格不直接开课程表单，先问一句"课程还是自定义安排"（与 Android 一致）。
+   *
+   * 为什么不直接开课程表单：课程和安排是两种完全不同的东西，而"点空格"是最常用的入口。
+   * 默认进课程表单的话，想记一条"每周三健身"的人要先关掉课程表单再想办法。
+   */
+  @Builder
+  addChoiceCard() {
+    Column({ space: 10 }) {
+      Row() {
+        Text(CourseDraft.dayName(this.addChoiceDay) + ' · 第 ' + this.addChoicePeriod + ' 节')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .layoutWeight(1)
+        Text('取消')
+          .fontSize(12)
+          .fontColor('#E07A5F')
+          .onClick(() => {
+            this.addChoiceOpen = false;
+          })
+      }
+      .width('100%')
+
+      Text('在这个时间段添加什么？')
+        .fontSize(12)
+        .fontColor('#7A6E66')
+        .width('100%')
+
+      Row({ space: 8 }) {
+        Button('课程')
+          .fontSize(14)
+          .height(40)
+          .layoutWeight(1)
+          .backgroundColor('#E07A5F')
+          .onClick(() => {
+            this.addChoiceOpen = false;
+            this.openCourseEditorAt(this.addChoiceDay, this.addChoicePeriod);
+          })
+        Button('自定义安排')
+          .fontSize(14)
+          .height(40)
+          .layoutWeight(1)
+          .backgroundColor('#9A8C82')
+          .onClick(() => {
+            this.addChoiceOpen = false;
+            this.openEventEditorAt(this.addChoiceDay, this.addChoicePeriod);
+          })
+      }
+      .width('100%')
     }
     .width('100%')
     .padding(16)
@@ -1581,6 +1705,14 @@ struct Index {
       this.editorOpen = false;
       return true;
     }
+    if (this.eventEditorOpen) {
+      this.eventEditorOpen = false;
+      return true;
+    }
+    if (this.addChoiceOpen) {
+      this.addChoiceOpen = false;
+      return true;
+    }
     if (this.semesterOpen) {
       this.semesterOpen = false;
       return true;
@@ -1900,8 +2032,16 @@ struct Index {
 
   // ---------------------------------------------------------------- 课程编辑
 
-  /** 点空白格：新建课程，预填这一格的星期与节次 */
+  /** 点空白格：先问"课程还是自定义安排"，预填这一格的星期与节次 */
   private onCellTap(dayOfWeek: number, period: number): void {
+    this.closeDetail();
+    this.addChoiceDay = CourseDraft.clampDay(dayOfWeek);
+    this.addChoicePeriod = CourseDraft.clampPeriod(period, this.periodCount);
+    this.addChoiceOpen = true;
+  }
+
+  /** 新建课程，预填这一格的星期与节次 */
+  private openCourseEditorAt(dayOfWeek: number, period: number): void {
     this.editorCourseId = 0;
     this.editorTitle = '添加课程';
     this.editorName = '';
@@ -2029,6 +2169,119 @@ struct Index {
     }
   }
 
+  // ---------------------------------------------------------------- 自定义安排编辑
+
+  /** 新建安排：预填这一格的星期/节次，周次默认整学期（见 `EventDraft.defaultWeeks`） */
+  private openEventEditorAt(dayOfWeek: number, period: number): void {
+    const base = EventDraft.newInput(dayOfWeek, period, this.periodCount, this.totalWeeks);
+    this.eventEditorId = 0;
+    this.eventHeading = '添加安排';
+    this.eventTitle = base.title;
+    this.eventNote = base.note;
+    this.eventDay = base.day;
+    this.eventStart = base.start;
+    this.eventEnd = base.end;
+    this.eventWeeks = base.weeks;
+    // 新建时没有"原值"可保留：颜色交给默认安排色（WeekItems 里 color === 0 时用 EVENT_COLOR）
+    this.eventColor = 0;
+    this.eventStartMinute = null;
+    this.eventEndMinute = null;
+    this.closeDetail();
+    this.eventEditorOpen = true;
+  }
+
+  private openEventEditorById(eventId: number): void {
+    const event: CustomEvent | null = this.findEvent(eventId);
+    if (event === null) {
+      this.getUIContext().getPromptAction().showToast({ message: '这条安排已经不在课表里了', duration: 1500 });
+      return;
+    }
+    // 只有钟点、没有节次的安排（老数据）也照常能编辑：节次从 1 起，保存时按选中的节次定位。
+    // 与 Android 一致 —— 本版网格的纵轴是节次，没有节次就画不出来，让它落进网格更合理。
+    const start: number = event.startPeriod === null ? 1 : event.startPeriod;
+    this.eventEditorId = event.id;
+    this.eventHeading = '编辑安排';
+    this.eventTitle = event.title;
+    this.eventNote = event.note;
+    this.eventDay = event.dayOfWeek;
+    this.eventStart = start;
+    this.eventEnd = event.endPeriod === null ? start : event.endPeriod;
+    this.eventWeeks = WeekMasks.format(maskFromDb(event.weekMask));
+    this.eventColor = event.color;
+    this.eventStartMinute = event.startMinute;
+    this.eventEndMinute = event.endMinute;
+    this.closeDetail();
+    this.eventEditorOpen = true;
+  }
+
+  private async saveEventPayload(result: EventDraftResult): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    if (store === null) {
+      this.getUIContext().getPromptAction().showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
+      return;
+    }
+    try {
+      // maskToDb 也放进 try：越界时它会抛错，放在 try 外面就变成 unhandled rejection，
+      // 界面表现是"点了保存什么都没发生"（课程表单踩过同一个坑）
+      const event: CustomEvent = {
+        id: this.eventEditorId,
+        timetableId: this.currentTimetableId(),
+        title: result.title,
+        dayOfWeek: result.day,
+        startPeriod: result.start,
+        endPeriod: result.end,
+        // 透传：本表单不编辑这两项，但编辑一次就清空是不行的
+        startMinute: this.eventStartMinute,
+        endMinute: this.eventEndMinute,
+        weekMask: maskToDb(result.weekMask),
+        color: this.eventColor,
+        note: result.note,
+      };
+      await store.saveEvent(event);
+      this.eventEditorOpen = false;
+      await this.refreshAfterEdit();
+      // 与课程一样：保存后当前这一周可能看不到它（比如只安排了 1-8 周，而你停在第 9 周），
+      // 跳到它第一次出现的那一周，否则用户会以为"保存了但什么都没发生"
+      if (!WeekMasks.contains(result.weekMask, this.selectedWeek)) {
+        this.goToFirstWeekOf(result.weekMask);
+      }
+      this.getUIContext().getPromptAction().showToast({
+        message: this.eventEditorId > 0 ? '已更新：' + result.title : '已添加：' + result.title,
+        duration: 1500,
+      });
+      this.eventEditorId = 0;
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
+    }
+  }
+
+  private async deleteEditedEvent(): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    const id: number = this.eventEditorId;
+    if (store === null || id <= 0) {
+      return;
+    }
+    try {
+      await store.deleteEvent(id);
+      this.eventEditorOpen = false;
+      this.eventEditorId = 0;
+      await this.refreshAfterEdit();
+      this.getUIContext().getPromptAction().showToast({ message: '已删除该安排', duration: 1500 });
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
+    }
+  }
+
+  /** 跳到掩码里第一次出现的那一周（掩码非空；调用方已确认当前周不在里面） */
+  private goToFirstWeekOf(mask: bigint): void {
+    for (let w = 1; w <= this.totalWeeks; w++) {
+      if (WeekMasks.contains(mask, w)) {
+        this.goToWeek(w);
+        return;
+      }
+    }
+  }
+
   /**
    * 这个色块"这一次"的教室：找它对应的那条时段，教室为空时退回课程地点。
    * 与 `WeekItems.locationOf` 是同一套规则（格子里显示的也是它）。
@@ -2051,13 +2304,27 @@ struct Index {
     return course === null ? '' : course.location;
   }
 
-  private findCourse(id: number): Course | null {    const snap: Snapshot | null = this.snapshot;
+  private findCourse(id: number): Course | null {
+    const snap: Snapshot | null = this.snapshot;
     if (snap === null || id <= 0) {
       return null;
     }
     for (const c of snap.courses) {
       if (c.id === id) {
         return c;
+      }
+    }
+    return null;
+  }
+
+  private findEvent(id: number): CustomEvent | null {
+    const snap: Snapshot | null = this.snapshot;
+    if (snap === null || id <= 0) {
+      return null;
+    }
+    for (const e of snap.events) {
+      if (e.id === id) {
+        return e;
       }
     }
     return null;
@@ -2072,6 +2339,7 @@ struct Index {
     this.detailTitle = '';
     this.detailLines = [];
     this.detailCourseId = 0;
+    this.detailEventId = 0;
   }
 
   // ---------------------------------------------------------------- 学期设置
@@ -2146,9 +2414,13 @@ struct Index {
 
   private onItemTap(item: WeekItem): void {
     this.detailCourseId = 0;
+    this.detailEventId = 0;
     if (item.kind === WeekItems.KIND_EVENT) {
+      const event: CustomEvent | null = this.findEvent(item.id);
+      // 库里找不到这条安排（刚被删 / 旧快照）时不给"编辑"，否则点进去是一张空表单
+      this.detailEventId = event === null ? 0 : event.id;
       this.detailTitle = item.title;
-      this.detailLines = ['自定义安排', '备注：' + (item.subtitle.length === 0 ? '（无）' : item.subtitle)];
+      this.detailLines = this.eventDetailLines(item, event);
       return;
     }
     this.detailCourseId = item.id;
@@ -2476,6 +2748,63 @@ struct Index {
       }
     }
     return '本周';
+  }
+
+  /**
+   * 周次文案：课程走 `weekMaskTextOf`（按时段匹配），安排走库里的 `weekMask`。
+   *
+   * 为什么安排不能复用上面那个：它按 (courseId, day, start, end) 匹配，
+   * 而安排根本没有 courseId —— 直接复用会一路落到 `'本周'`，详情卡上永远是"本周"。
+   */
+  private weekMaskTextOfItem(item: WeekItem): string {
+    if (item.kind !== WeekItems.KIND_EVENT) {
+      return this.weekMaskTextOf(item);
+    }
+    const event: CustomEvent | null = this.findEvent(item.id);
+    return event === null ? '' : WeekMasks.format(maskFromDb(event.weekMask));
+  }
+
+  private slotOf(period: number): TimeSlot | null {
+    for (const s of this.slots()) {
+      if (s.periodIndex === period) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /** 自定义安排的详情几行：时间（含钟点）、周次、备注、冲突 */
+  private eventDetailLines(item: WeekItem, event: CustomEvent | null): string[] {
+    const lines: string[] = ['自定义安排'];
+    if (event === null) {
+      // 只剩网格里那份数据：照实显示，不编造备注/周次
+      lines.push('时间：' + EventDraft.periodText(item.dayOfWeek, item.startPeriod, item.endPeriod));
+      if (item.subtitle.length > 0) {
+        lines.push('备注：' + item.subtitle);
+      }
+    } else {
+      lines.push('时间：' + this.eventTimeText(event));
+      const weeks: string = this.weekMaskTextOfItem(item);
+      lines.push('周次：' + (weeks.length === 0 ? '（未设置）' : weeks + ' 周'));
+      lines.push('备注：' + (event.note.length === 0 ? '（无）' : event.note));
+    }
+    if (item.conflicts.length > 0) {
+      lines.push('⚠ 与《' + item.conflicts.join('》《') + '》时间重叠');
+    }
+    return lines;
+  }
+
+  /** 「周三 第 3-4 节  10:00-11:35」；作息里查不到这一节就只显示节次 */
+  private eventTimeText(event: CustomEvent): string {
+    const start: number = event.startPeriod === null ? 1 : event.startPeriod;
+    const end: number = event.endPeriod === null ? start : event.endPeriod;
+    let text: string = EventDraft.periodText(event.dayOfWeek, start, end);
+    const slotStart: TimeSlot | null = this.slotOf(start);
+    const slotEnd: TimeSlot | null = this.slotOf(end);
+    if (slotStart !== null && slotEnd !== null) {
+      text = text + '  ' + Minutes.format(slotStart.startMinute) + '-' + Minutes.format(slotEnd.endMinute);
+    }
+    return text;
   }
 
   // ---------------------------------------------------------------- 模型转换

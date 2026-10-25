@@ -16,6 +16,7 @@ export * from './CellLayout.ts';
 export * from './Colors.ts';
 export * from './Conflicts.ts';
 export * from './CourseDraft.ts';
+export * from './EventDraft.ts';
 export * from './GridFormatParser.ts';
 export * from './InputNorm.ts';
 export * from './ListFormatParser.ts';
