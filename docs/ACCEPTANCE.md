@@ -30,11 +30,30 @@
 4. 与 Android 版（178 ms）比，这台模拟器上约慢 3.5 倍。**真机预期明显更快**，
    但这一条目前**没有真机数据**，不作承诺。
 
+### 1.1 用完 pdf.js 就把 Web 放掉（`releaseWeb`）
+
+导入结束（无论成功、超时还是抛错）之后 `releaseWeb()` 会：`webRequested = false`（组件离开组件树）
+→ `webReady = false` → 换一个新的 `WebviewController`（旧 controller 绑的是已销毁的组件，
+继续用只会丢回调）。
+
+| 验的点 | 做法 | 结果 |
+|---|---|---|
+| Web 真的没了 | 导入一次真实课表 PDF（认出 14 门）后 `uitest dumpLayout` | **Web 节点数 = 0**（修前会留一个 1×1 的 Web） |
+| **还能再导入**（这是这次改动唯一的真风险） | 同一次会话里再导入同一份 PDF | 仍然「网格式 · 认出 14 门课」，Web 节点再次 = 0 |
+| 回调不会串 | 两次导入之间不去点「覆盖/合并」 | 第二次的 payload 仍属于第二个文件（`CLEAR_SCRIPT` 在 `extractPdfPayload` 里） |
+
+冷启动数字**不作承诺**：模拟器上 9 次采样的跨度是 **711~1107 ms**（中位数 896），
+比"Web 是否在树里"带来的 ~0.4s 差异还大 —— 也就是说这台软件渲染的机器测不出这个改动的收益。
+能确证的只有上面三条（组件确实被销毁、且销毁后仍可重建）。
+
+> 参考：修之前，**启动时就把 Web 挂在树上**的两次实测是 1223 ms（还加载 pdf.js）与 1102 ms
+> （停在 about:blank），而对照片段"完全不带 Web"是 698 ms。释放之后，用户用完导入再启动，
+> 走的就是"不带 Web"的那条路。
 ## 2. 体积
 
 | 项 | 大小 |
 |---|---|
-| HAP（release，未签名） | **2.39 MB**（2,387,095 字节；含 3d 作息导入，上一版 2,309,163） |
+| HAP（release，未签名） | **2.39 MB**（2,387,511 字节；含 3d 作息导入与 Web 释放，上一版 2,309,163） |
 | ├─ pdf.js 3.11 legacy（`pdf.min.js` + worker） | 1.51 MB |
 | ├─ 内联中文 CMap（`cmaps-data.js`） | 182 KB |
 | └─ 应用自身（ArkTS 字节码 + 资源） | 约 0.5 MB |
@@ -129,15 +148,38 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 5. **`resource://rawfile` 上不能发 XHR/fetch**（CORS 只允许 arkweb/http/https/data），
    所以 pdf.js 的中文 CMap 只能内联成 JS 变量，不能走 `cMapUrl` 目录。
 
+## 6.5 真机验证为什么没做成（2026-10-25 实测）
+
+用户接了一台真机上来，结果**装不进去**，原因值得记一笔：
+
+| 项 | 实测值 | 怎么得到的 |
+|---|---|---|
+| 设备 | HUAWEI nova 12 Ultra（ADA-AL00U / ADL-AL00U） | `adb devices -l` |
+| 系统 | **HarmonyOS 4.2.0**（EmotionUI 14.2.0，底层 Android 12 / API 31） | `getprop ro.build.version.release` / `ro.build.display.id` |
+| hdc | `hdc list targets` → **`[Empty]`** | hdc 只认纯血鸿蒙（NEXT）设备 |
+| adb | `adb devices` → `2UCUT24328002862  device` | 4.2 是 Android 内核版，走 adb |
+| 本工程的兼容级别 | `compatibleSdkVersion: "26.0.0"`（HarmonyOS 7.0 / API 26） | `build-profile.json5` |
+
+结论：**HarmonyOS 4.x 用 adb、跑 Android APK；HAP 只能在纯血鸿蒙（NEXT）上装**，
+而本工程的最低 API 是 26。所以那台机器连"装上"这一步都做不到，与代码无关。
+
+要在真机上验，需要满足以下之一：
+
+1. 一台纯血鸿蒙设备，且系统版本 ≥ 本工程的 `compatibleSdkVersion`（API 26）；
+2. 或者把 `compatibleSdkVersion` 降到目标设备支持的级别再构建 —— 这会新开一个
+   "兼容低版本"的分支，并逐个确认用到的 API 在那一版存在（可能要去掉个别新 API）。
+
+在拿到这样的设备之前，**「图片 OCR 识别效果」与「真机冷启动」两条只能继续挂起**；
+模拟器上的结论（295 条断言、冷启动 698 ms/644 ms、各功能实测）保持有效。
+
 ## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。
 2. **PDF 导入的解析正确率**只在 1 份真实课表上验过（24 门）。不同学校的版式差异大，
    解析器是"尽力而为 + 预览确认"的设计，不会静默写错。
-3. **OCR 通道完全没有端到端验证**（模拟器无后端）。代码可以写，但不写就少一块功能 —— 待真机。
+3. **图片 OCR 的识别效果没验**（模拟器无后端，1001400001）。通道本身已实现：能开相册、取消不算错误、失败给可诊断的话，这三条在设备上验过；识别准不准只能等真机。
 4. 冲突格的并排显示在窄列下文字会竖排（与 Android 版一致的既有行为）。
-5. **pdf.js 的 Web 组件用过之后常驻**（约 1.5 MB + 一个 worker），下次启动会慢 ~0.4s。
-   计划：导入结束后把 `webRequested` 置回 false 释放它（见 `docs/REVIEW.md` 的"待办"）。
+5. ~~pdf.js 的 Web 组件用过之后常驻~~ —— **已修**：`releaseWeb()` 在抽取结束后销毁 Web、把 `webReady` 置回 false、并换一个新的 `WebviewController`。实测导入后组件树里 **0 个 Web 节点**，且同一次会话里**再导入一次仍然成功**（见 §1.1）。
 6. **pdf.js 是 3.11.174**（2023 年版本）。CVE-2024-4367 的缓解措施 `isEvalSupported:false`
    已经开着，但版本本身偏旧，升级前先按 `docs/SPIKES.md` 重跑导入验证。
 

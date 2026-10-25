@@ -61,25 +61,25 @@ CI 触发从"只 main"改成所有 push/PR，并加 `permissions: contents: read
 
 ## 记录但没改（都写了理由）
 
-| # | 问题 | 为什么先不改 |
+| # | 问题 | 现状 / 为什么先不改 |
 |---|---|---|
-| 1 | **pdf.js 的 Web 组件用过之后常驻**（约 1.5 MB + worker，下次启动慢 ~0.4s） | 释放要在导入结束后 `webRequested = false`，并确认不在轮询中途销毁。这条要改就得连"再次导入"的时序一起重验，属于下一轮单独做的事 |
+| 1 | ~~pdf.js 的 Web 组件用过之后常驻~~ → **已修**（`releaseWeb()`，2026-10-25） | 触发点在 `extractPdfPayload` 的 `finally`：轮询已结束，销毁不会丢结果；同时把 `webReady` 置回 false 并换新的 `WebviewController`（旧 controller 绑的是已销毁的组件）。实测导入后组件树 **0 个 Web 节点**，同会话**再导入一次仍成功**（`docs/ACCEPTANCE.md` §1.1） |
 | 2 | `SpikeProbe` 泄漏 ImageSource / PixelMap / OCR 服务（只在开发者入口跑） | 只影响开发期反复跑 spike；真要修就得给三段资源都套 try/finally，改完还得在真机上跑 OCR 才有意义（模拟器没后端） |
 | 3 | `viewer.html` 出错时不 `doc.destroy()`；没有 CSP；pdf.js 3.11.174 偏旧 | 前两条一起做（try/finally + CSP），第三条要重新验证导入链；CVE-2024-4367 的缓解开关 `isEvalSupported:false` 已经开着 |
 | 4 | `saveEvent` / `saveSlot` / `switchTo` 不校验目标是否存在（外键关着，UPDATE 0 行不报错） | `saveCourse` 已加校验（唯一会被"用户看不到的门"触发的一条）。其余需要各自的决定：是抛错还是返回 false |
 | 5 | `createTimetable` 先提交课表行、再写作息，两步不是同一事务 | 要"事务内拿自增 id"，得给 `SqlRunner` 加能力；当前失败窗口极小且只影响新建课表 |
 | 6 | `snapshot()` 是 5 条独立查询，不是一次读事务 | 单进程应用，读写不会并发到需要快照隔离；改成事务会让 `SqlRunner` 变复杂 |
-| 7 | 死代码：`copySlots`、`saveEvent/deleteEvent`（自定义安排的 UI 还没做）、`WeekMasks.range`、`Minutes.parse`、`CourseDraft.rowSummary` 等 13 项 | 大多是为"自定义安排 UI"预留的；删掉以后再写一遍更亏。已在清单里，做那个界面时一并清理 |
+| 7 | 死代码（自查时 13 项） | 自定义安排与作息编辑做完之后，`saveEvent/deleteEvent`、`WeekMasks.range`、`Minutes.parse` 都用上了；现在真正没被生产代码调用的只剩 `CourseDraft.rowSummary`（测试里在用，留着当格式化工具） |
 | 8 | 重复实现：`Minutes.parse` vs `InputNorm.time`、`InputNorm.date` vs `WeekCalculator.epochDayOfIso`、节次分组阈值两处 | 都有测试覆盖，行为一致；合并要动两个模块的调用方，收益低于风险 |
 | 9 | `GridFormatParser` 对"只有课名、没有详情行"的格子静默丢弃 / 粘到下一门课名上 | 真实课表里没出现过；改动它要重新验证解析，风险比收益大 |
 | 10 | `dayOfWeek` / 节次范围没有在写库边界校验（`WeekItems` 也不校验） | 目前所有入口（表单、导入）都已夹过范围；再加一道属于防御性编程，等真有第二个写入口时加 |
 
 ## 现在还剩什么
 
-1. **截图 OCR 导入** —— 模拟器没有 OCR 后端，只能真机验（`[1001400001]`）。
-2. **自定义安排界面** —— 数据层与读路径都就绪，只差 UI。
-3. **真机冷启动** —— 只在 x86 模拟器上量过（698 ms），真机未测。
-4. **上面"记录但没改"的 10 项** —— 见各自的理由。
+1. **图片 OCR 的识别效果** —— 通道已实现并在设备上验过"能开相册 / 取消不算错 / 失败可诊断"，但**识别准不准只能真机**（模拟器无 OCR 后端）。
+2. ~~自定义安排界面~~ —— **已完成**（`feat(ui)` 5e8a066）。
+3. **真机冷启动** —— 只在 x86 模拟器上量过；真机没测成（接上来的 nova 12 Ultra 是 HarmonyOS 4.2，adb 能连、hdc 看不到，见 `docs/ACCEPTANCE.md` §6.5）。
+4. **上面"记录但没改"的其余 9 项** —— 见各自的理由（第 1 项已修）。
 
 ## 真实课表第三轮（v3：教室跟着时段走）
 

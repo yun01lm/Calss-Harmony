@@ -1724,6 +1724,30 @@ struct Index {
       })
   }
 
+  /**
+   * 用完 pdf.js 就把它释放掉。
+   *
+   * 为什么值得做：只要 Web 组件在组件树里，进程就要为 ArkWeb 付 ~0.4s 的启动时间
+   * （数字见 `docs/ACCEPTANCE.md` §1），并且常驻约 1.5 MB 的 pdf.js 与一个 worker。
+   * 导入结束后没有任何理由留着它 —— 用户可能一整周都不再导入。
+   *
+   * 三个动作必须一起做，少一个就会出现"下一次导入卡住"：
+   * 1. `webRequested = false`：组件真正从树上移除；
+   * 2. `webReady = false`：否则下一次会以为解析器还活着；
+   * 3. 换一个**新的** `WebviewController`：旧 controller 绑定的是已销毁的组件，
+   *    对着它调 `runJavaScript` 只会丢回调（`ensureWeb` 会干等 30 秒）。
+   *
+   * 调用时机：所有 `pollPdfResult` 都已经返回之后（轮询中途销毁 = 结果丢失）。
+   */
+  private releaseWeb(): void {
+    if (!this.webRequested) {
+      return;
+    }
+    this.webRequested = false;
+    this.webReady = false;
+    this.webController = new webview.WebviewController();
+  }
+
   /** 用 pdf.js 抽取合成夹具 PDF 的带坐标文本，再喂给现有的两个解析器 */
   private async runPdfSpike(): Promise<void> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
@@ -1760,6 +1784,9 @@ struct Index {
       const line: SpikeLine = { label: 'pdf.js 调用失败', ok: false, detail: err.message };
       this.pdfLines = [line];
       this.pdfRunning = false;
+    } finally {
+      // spike 只跑一次，跑完就把 Web 放掉（与导入同样的理由）
+      this.releaseWeb();
     }
   }
 
@@ -2032,19 +2059,25 @@ struct Index {
   private async extractPdfPayload(base64: string, onStage: (stage: string) => void): Promise<string> {
     // 首次导入要先创建 WebView 并加载 pdf.js（这台模拟器实测十几秒），把原因说清楚
     onStage(this.webReady ? '解析中…' : '准备解析器（首次较慢）…');
-    const ready: boolean = await this.ensureWeb();
-    if (!ready) {
-      throw new Error('解析器加载失败（30 秒内没就绪），请重试');
+    try {
+      const ready: boolean = await this.ensureWeb();
+      if (!ready) {
+        throw new Error('解析器加载失败（30 秒内没就绪），请重试');
+      }
+      onStage('解析中…');
+      // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
+      await this.runJs(PdfJs.CLEAR_SCRIPT);
+      this.webController.runJavaScript(PdfJs.extractCall(base64));
+      const payload: string = await this.pollPdfResult(60000);
+      if (payload.length === 0) {
+        throw new Error('解析超时（60 秒内没有结果）');
+      }
+      return payload;
+    } finally {
+      // 放在 finally 里而不是调用方：轮询已经结束（成功/超时/抛错都一样），
+      // 这时销毁 Web 不会丢结果；调用方就算忘了释放也不会把 Web 留到下次启动。
+      this.releaseWeb();
     }
-    onStage('解析中…');
-    // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
-    await this.runJs(PdfJs.CLEAR_SCRIPT);
-    this.webController.runJavaScript(PdfJs.extractCall(base64));
-    const payload: string = await this.pollPdfResult(60000);
-    if (payload.length === 0) {
-      throw new Error('解析超时（60 秒内没有结果）');
-    }
-    return payload;
   }
 
   /** pdf.js 回传 → 选解析器 → 生成预览（**不写库**，等用户点按钮） */
