@@ -18,6 +18,7 @@
 | 3 | 导入（PDF：选文件→预览→覆盖/合并/新建，**真实课表 24 门**）+ 作息编辑 + 多课表 | ✅ |
 | 3b | 课程编辑：点空白格新建 / 点色块编辑·删除；学期设置（开学日 / 总周数）—— **253 断言 + 实机建·改·删** | ✅ |
 | 3c | 自定义安排：点空白格选「自定义安排」新建 / 点色块编辑·删除（标题、备注、星期、起止节、周次）—— **270 断言 + 实机建·改·删·重启留存** | ✅ |
+| 3d | 作息：编辑（节次号/分组/起止）、加一节、从其他课表复制；**导入作息**三条通道（图片 OCR / 粘贴文本 / PDF）→ 校对页 → 整表替换 —— **295 断言 + 实机（OCR 识别待真机）** | ✅ |
 | 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`） | ✅ |
 
 ## 环境
@@ -52,7 +53,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 | 项 | 结果 |
 |---|---|
 | ArkTS 编译 | ✅ `BUILD SUCCESSFUL`（33 tasks，约 8~13 s） |
-| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.30 MB，其中 pdf.js 1.51 MB） |
+| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.39 MB，其中 pdf.js 1.51 MB） |
 | 编译确实在检查类型 | ✅ 故意把 `number` 赋成 `'x'` → `ArkTS Compiler Error` |
 | 关键配置坑 | `modelVersion` 必须 **6.0.0**；SDK 版本串必须是 **"26.0.0"**（不是 `"26.0.0(26)"`） |
 
@@ -75,6 +76,6 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 ## 校验
 
 ```powershell
-npm test                        # 270 条断言，不需要鸿蒙 SDK
+npm test                        # 295 条断言，不需要鸿蒙 SDK
 node tools/check-architecture.mjs   # logic/ 与 data/ 的依赖方向 + .ts 扩展名
 ```

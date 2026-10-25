@@ -5,11 +5,14 @@ import { webview } from '@kit.ArkWeb';
 import {
   CourseDraft,
   EventDraft,
+  ExifOrientation,
   GridFormatParser,
   InputNorm,
   ListFormatParser,
   Minutes,
   PdfRunText,
+  SlotDraft,
+  TimetableTextParser,
   WeekCalculator,
   WeekItems,
   WeekMasks,
@@ -21,9 +24,13 @@ import {
   type DraftRow,
   type EventDraftResult,
   type EventLike,
+  type OcrLine,
   type ParseResult,
   type PdfExtractResult,
+  type RecognizedPeriod,
   type ScheduleLike,
+  type SlotRow,
+  type TimetableParseResult,
   type WeekItem,
 } from '../logic';
 import { Rdb } from '../platform/Rdb';
@@ -31,6 +38,7 @@ import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
+import { Ocr, type OcrOutcome } from '../platform/Ocr';
 import { ScheduleStore } from '../data/ScheduleStore';
 import { mergeCourseItems, type MergeOutcome } from '../data/CourseMerge';
 import {
@@ -49,6 +57,7 @@ import {
 import { WeekGrid } from '../view/WeekGrid';
 import { CourseEditor } from '../view/CourseEditor';
 import { EventEditor } from '../view/EventEditor';
+import { SlotEditor } from '../view/SlotEditor';
 
 /**
  * 主页：周视图。
@@ -168,10 +177,42 @@ struct Index {
   private importCourses: CourseWithSchedules[] = [];
 
   // ---------------- 二级页面（作息 / 课表）
-  /** 'home' | 'slots' | 'timetables' —— 用状态切屏而不是路由：只有两个页面，省掉一层导航栈 */
+  /** 'home' | 'slots' | 'slotsimport' | 'timetables' —— 用状态切屏而不是路由：页面少，省掉一层导航栈 */
   @State screen: string = 'home';
   @State timetables: Timetable[] = [];
   @State slotsBusy: boolean = false;
+
+  // ---------------- 节次编辑弹窗（作息页与导入校对页共用）
+  @State slotEditorOpen: boolean = false;
+  @State slotEditorHeading: string = '编辑节次';
+  /** 'slot' = 改库里的作息；'review' = 改导入校对页里的行 */
+  @State slotEditorTarget: string = 'slot';
+  @State slotEditorSlotId: number = 0;
+  @State slotEditorReviewIndex: number = -1;
+  @State slotEditorPeriod: string = '1';
+  @State slotEditorLabel: string = '';
+  @State slotEditorStart: string = '8:00';
+  @State slotEditorEnd: string = '8:45';
+  @State slotEditorInferred: boolean = false;
+
+  // ---------------- 从其他课表复制作息
+  @State copySlotsOpen: boolean = false;
+
+  // ---------------- 导入作息（三条通道 → 同一个校对页）
+  /** 'idle' | 'parsing' | 'review' | 'error' | 'done' */
+  @State slotImportPhase: string = 'idle';
+  @State slotImportRows: SlotRow[] = [];
+  @State slotImportWarnings: string[] = [];
+  @State slotImportError: string = '';
+  @State slotImportRaw: string[] = [];
+  @State slotImportRawOpen: boolean = false;
+  @State slotImportPasteOpen: boolean = false;
+  @State slotImportPasteText: string = '';
+  @State slotImportStage: string = '';
+  /** 这次是从哪条通道进来的（出问题时知道该找谁） */
+  @State slotImportSource: string = '';
+  private slotImportStarting: boolean = false;
+
   /** '' | 'create' | 'rename'：正在弹输入框 */
   @State textDialog: string = '';
   @State textValue: string = '';
@@ -194,6 +235,8 @@ struct Index {
       Column() {
         if (this.screen === 'slots') {
           this.slotsScreen()
+        } else if (this.screen === 'slotsimport') {
+          this.slotsImportScreen()
         } else if (this.screen === 'timetables') {
           this.timetablesScreen()
         } else {
@@ -300,6 +343,39 @@ struct Index {
         })
       }
 
+      if (this.slotEditorOpen) {
+        SlotEditor({
+          heading: this.slotEditorHeading,
+          initialPeriod: this.slotEditorPeriod,
+          initialLabel: this.slotEditorLabel,
+          initialStart: this.slotEditorStart,
+          initialEnd: this.slotEditorEnd,
+          inferred: this.slotEditorInferred,
+          canDelete: this.slotEditorTarget === 'slot' && this.slotEditorSlotId > 0,
+          onSubmit: (row: SlotRow) => {
+            this.submitSlotEditor(row);
+          },
+          onDelete: () => {
+            this.deleteSlotFromEditor();
+          },
+          onCancel: () => {
+            this.slotEditorOpen = false;
+          },
+        })
+      }
+
+      if (this.slotImportPasteOpen) {
+        this.pasteSlotsCard()
+      }
+
+      if (this.slotImportRawOpen) {
+        this.slotImportRawCard()
+      }
+
+      if (this.copySlotsOpen) {
+        this.copySlotsCard()
+      }
+
       // pdf.js 容器：1x1 且透明，**用时才创建**（常驻会让冷启动多 ~0.5s）
       if (this.webRequested) {
         this.hiddenWeb()
@@ -365,7 +441,8 @@ struct Index {
         .fontColor('#B4664C')
         .margin({ right: 6 })
         .onClick(() => {
-          this.screen = 'slots';
+          // 走 openSlots 而不是直接改 screen：顺带把课表列表读出来（"从其他课表复制"要用）
+          this.openSlots();
         })
 
       Button(this.importBusy ? '导入中…' : '导入')
@@ -607,7 +684,7 @@ struct Index {
     Column({ space: 8 }) {
       this.screenHeader('作息时间')
 
-      Text('课表格子里的节次时间从这张表来。改完立即生效，课程数据不动。')
+      Text('课表格子里的节次时间从这张表来。改完立即生效，课程数据不动。点任意一行可以改节次号、分组与起止时间。')
         .fontSize(10)
         .fontColor('#A89C93')
         .width('100%')
@@ -617,37 +694,33 @@ struct Index {
         ForEach(this.slots(), (slot: TimeSlot) => {
           ListItem() {
             Row({ space: 8 }) {
-              Text(`第 ${slot.periodIndex} 节`)
-                .fontSize(12)
-                .fontWeight(FontWeight.Medium)
-                .fontColor('#3B3430')
-                .width(64)
+              Column({ space: 2 }) {
+                Row({ space: 6 }) {
+                  Text('第 ' + slot.periodIndex + ' 节')
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor('#3B3430')
+                  if (slot.label.trim().length > 0) {
+                    Text(slot.label)
+                      .fontSize(9)
+                      .fontColor('#8A7A6E')
+                      .backgroundColor('#F3E6DC')
+                      .borderRadius(4)
+                      .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+                  }
+                }
+                Text(Minutes.format(slot.startMinute) + ' - ' + Minutes.format(slot.endMinute) +
+                  ' · ' + (slot.endMinute - slot.startMinute) + ' 分')
+                  .fontSize(11)
+                  .fontColor('#7A6E66')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
 
-              Text(Minutes.format(slot.startMinute))
-                .fontSize(14)
-                .fontColor('#E07A5F')
-                .width(56)
-                .textAlign(TextAlign.Center)
-                .onClick(() => {
-                  this.pickSlotTime(slot, true);
-                })
-
-              Text('—').fontSize(12).fontColor('#B3A79E')
-
-              Text(Minutes.format(slot.endMinute))
-                .fontSize(14)
-                .fontColor('#E07A5F')
-                .width(56)
-                .textAlign(TextAlign.Center)
-                .onClick(() => {
-                  this.pickSlotTime(slot, false);
-                })
-
-              Text(`${(slot.endMinute - slot.startMinute)} 分`)
-                .fontSize(10)
-                .fontColor('#A89C93')
-                .layoutWeight(1)
-
+              Text('改')
+                .fontSize(11)
+                .fontColor('#5B7C99')
+                .padding({ left: 6, right: 6 })
               Text('删除')
                 .fontSize(11)
                 .fontColor('#C62828')
@@ -659,8 +732,11 @@ struct Index {
             .padding({ left: 16, right: 16, top: 8, bottom: 8 })
             .backgroundColor('#FFFFFF')
             .borderRadius(8)
-            }
-          }, (slot: TimeSlot) => 'slot' + slot.id + '-' + slot.startMinute + '-' + slot.endMinute)
+            .onClick(() => {
+              this.openSlotEditorForSlot(slot);
+            })
+          }
+        }, (slot: TimeSlot) => 'slot' + slot.id + '-' + slot.periodIndex + '-' + slot.startMinute + '-' + slot.endMinute)
       }
       .layoutWeight(1)
       .width('100%')
@@ -675,8 +751,33 @@ struct Index {
           .backgroundColor('#E07A5F')
           .enabled(!this.slotsBusy)
           .onClick(() => {
-            this.addSlot();
+            this.openSlotEditorForNew();
           })
+        Button('导入作息')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#5B7C99')
+          .enabled(!this.slotsBusy)
+          .onClick(() => {
+            this.openSlotsImport();
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+
+      Row({ space: 8 }) {
+        if (this.timetables.length > 1) {
+          Button('从其他课表复制')
+            .fontSize(12)
+            .height(34)
+            .layoutWeight(1)
+            .backgroundColor('#BDB3AB')
+            .enabled(!this.slotsBusy)
+            .onClick(() => {
+              this.copySlotsOpen = true;
+            })
+        }
         Button('恢复默认 12 节')
           .fontSize(12)
           .height(34)
@@ -692,6 +793,389 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+  }
+
+  // ---------------------------------------------------------------- 导入作息
+
+  /**
+   * 导入作息表：**三条通道 → 同一个校对页 → 整表替换**（与 Android 一致）。
+   *
+   * | 通道 | 依赖 | 这台模拟器上 |
+   * |---|---|---|
+   * | 识别图片 | 系统 Core Vision Kit（离线、不增体积） | 镜像里没有 OCR 后端，会给出可诊断的错误 |
+   * | 粘贴文本 | 无 | 完整可用（实测通道） |
+   * | 从 PDF 文件 | 包内 pdf.js（课程导入已经在用） | 完整可用 |
+   *
+   * 为什么必须先过校对页：识别不可能 100% 准。直接写库的话，用户看到的是一张
+   * "时间微妙地错了"的课表，而且要一条条手改才能发现 —— 校对页把错误摆在他眼前。
+   */
+  @Builder
+  slotsImportScreen() {
+    Column({ space: 8 }) {
+      this.screenHeader('导入作息表')
+
+      if (this.slotImportPhase === 'idle') {
+        this.slotImportIdle()
+      } else if (this.slotImportPhase === 'parsing') {
+        Column({ space: 10 }) {
+          LoadingProgress().width(32).height(32).color('#E07A5F')
+          Text(this.slotImportStage.length === 0 ? '处理中…' : this.slotImportStage)
+            .fontSize(12)
+            .fontColor('#7A6E66')
+            .textAlign(TextAlign.Center)
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .padding(24)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.slotImportPhase === 'error') {
+        Column({ space: 10 }) {
+          Text('没能导入')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#C62828')
+          Text(this.slotImportError)
+            .fontSize(12)
+            .fontColor('#7A6E66')
+            .textAlign(TextAlign.Center)
+          if (this.slotImportRaw.length > 0) {
+            Text('查看识别原文（' + this.slotImportRaw.length + ' 行）')
+              .fontSize(12)
+              .fontColor('#5B7C99')
+              .onClick(() => {
+                this.slotImportRawOpen = true;
+              })
+          }
+          Row({ space: 8 }) {
+            Button('再来一次')
+              .fontSize(12)
+              .height(34)
+              .backgroundColor('#E07A5F')
+              .onClick(() => {
+                this.slotImportPhase = 'idle';
+                this.slotImportError = '';
+              })
+            Button('手动改作息')
+              .fontSize(12)
+              .height(34)
+              .backgroundColor('#BDB3AB')
+              .onClick(() => {
+                this.screen = 'slots';
+              })
+          }
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .padding(24)
+        .justifyContent(FlexAlign.Center)
+      } else {
+        this.slotImportReview()
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  slotImportIdle() {
+    Column({ space: 12 }) {
+      Text('三条通道都先过校对页，核对无误再写入。应用时会整表替换当前课表的作息，课程数据不动。')
+        .fontSize(11)
+        .fontColor('#7A6E66')
+        .textAlign(TextAlign.Center)
+
+      Button('识别图片（相册）')
+        .fontSize(14)
+        .height(44)
+        .width('100%')
+        .backgroundColor('#E07A5F')
+        .onClick(() => {
+          this.startSlotImportImage();
+        })
+      Button('粘贴文本')
+        .fontSize(14)
+        .height(44)
+        .width('100%')
+        .backgroundColor('#5B7C99')
+        .onClick(() => {
+          this.slotImportPasteText = '';
+          this.slotImportPasteOpen = true;
+        })
+      Button('从 PDF 文件')
+        .fontSize(14)
+        .height(44)
+        .width('100%')
+        .backgroundColor('#9A8C82')
+        .onClick(() => {
+          this.startSlotImportPdf();
+        })
+
+      Text('「粘贴文本」最稳：从网页、微信、或相册自带的文字识别里复制作息行即可，每行要同时包含节次号和起止时间，例如「1  8:00-8:45」。')
+        .fontSize(10)
+        .fontColor('#A89C93')
+        .textAlign(TextAlign.Center)
+    }
+    .width('100%')
+    .padding({ left: 24, right: 24, top: 24 })
+  }
+
+  @Builder
+  slotImportReview() {
+    Column({ space: 6 }) {
+      Text('认出 ' + this.slotImportRows.length + ' 节（' + this.slotImportSource +
+        '）。点任意一行可以改；确认无误再应用。')
+        .fontSize(11)
+        .fontColor('#7A6E66')
+        .width('100%')
+        .padding({ left: 16, right: 16 })
+
+      ForEach(this.slotImportWarnings, (w: string) => {
+        Text('注意：' + w)
+          .fontSize(10)
+          .fontColor('#C77B2B')
+          .width('100%')
+          .padding({ left: 16, right: 16 })
+      }, (w: string, index: number) => 'warn' + index)
+
+      // 与"当前作息有几节"的对比**现算**：补一节/删一行之后数字要跟着变，
+      // 存进 warnings 里就会停在识别那一刻（实测校对页上补完一节还写着旧的数）
+      if (this.slotImportMissingHint().length > 0) {
+        Text('注意：' + this.slotImportMissingHint())
+          .fontSize(10)
+          .fontColor('#C77B2B')
+          .width('100%')
+          .padding({ left: 16, right: 16 })
+      }
+
+      List({ space: 4 }) {
+        ForEach(this.slotImportRows, (row: SlotRow, index: number) => {
+          ListItem() {
+            Row({ space: 6 }) {
+              Text(SlotDraft.describe(row))
+                .fontSize(12)
+                .fontColor('#3B3430')
+                .layoutWeight(1)
+              if (row.inferred) {
+                Text('推断')
+                  .fontSize(9)
+                  .fontColor('#FFFFFF')
+                  .backgroundColor('#C77B2B')
+                  .borderRadius(4)
+                  .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+              }
+              Text('改')
+                .fontSize(11)
+                .fontColor('#5B7C99')
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor('#FFFFFF')
+            .borderRadius(8)
+            .onClick(() => {
+              this.openSlotEditorForReview(index);
+            })
+          }
+        }, (row: SlotRow, index: number) =>
+          'sir' + index + '-' + row.periodIndex + '-' + row.startMinute + '-' + row.endMinute + '-' + (row.inferred ? '1' : '0'))
+      }
+      .layoutWeight(1)
+      .width('100%')
+      .padding({ left: 12, right: 12 })
+      .scrollBar(BarState.Off)
+
+      Row({ space: 8 }) {
+        Button('补一节')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#BDB3AB')
+          .onClick(() => {
+            this.addReviewSlotRow();
+          })
+        Button('取消')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#F3E6DC')
+          .fontColor('#B4664C')
+          .onClick(() => {
+            this.screen = 'slots';
+          })
+        Button('应用到课表')
+          .fontSize(12)
+          .height(34)
+          .layoutWeight(1)
+          .backgroundColor('#E07A5F')
+          .enabled(!this.slotsBusy)
+          .onClick(() => {
+            this.applySlotImport();
+          })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, bottom: 12 })
+    }
+    .width('100%')
+    .layoutWeight(1)
+  }
+
+  /** 识别原文：出问题时这是唯一能定位的线索（与 Android 的"查看识别原文"一致） */
+  @Builder
+  slotImportRawCard() {
+    Column() {
+      Column({ space: 8 }) {
+        Row() {
+          Text('识别原文')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#3B3430')
+            .layoutWeight(1)
+          Text('关闭')
+            .fontSize(12)
+            .fontColor('#E07A5F')
+            .onClick(() => {
+              this.slotImportRawOpen = false;
+            })
+        }
+        .width('100%')
+
+        List({ space: 2 }) {
+          ForEach(this.slotImportRaw, (line: string, index: number) => {
+            ListItem() {
+              Text(line)
+                .fontSize(11)
+                .fontColor('#5A4F48')
+                .width('100%')
+            }
+          }, (line: string, index: number) => 'raw' + index)
+        }
+        .layoutWeight(1)
+        .width('100%')
+        .scrollBar(BarState.Auto)
+      }
+      .width('88%')
+      .height('70%')
+      .padding(16)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
+  }
+
+  /** 粘贴文本通道：多行输入框（ArkUI 的 TextArea），解析前不写库 */
+  @Builder
+  pasteSlotsCard() {
+    Column() {
+      Column({ space: 10 }) {
+        Text('粘贴作息文本')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .width('100%')
+
+        Text('一行一节课，要同时有节次号和起止时间。')
+          .fontSize(10)
+          .fontColor('#A89C93')
+          .width('100%')
+
+        TextArea({ text: this.slotImportPasteText, placeholder: '1  8:00-8:45\n2  8:50-9:35\n3  9:55-10:40' })
+          .fontSize(13)
+          .height(150)
+          .width('100%')
+          .backgroundColor('#F6EFE8')
+          .onChange((v: string) => {
+            this.slotImportPasteText = v;
+          })
+
+        Row({ space: 8 }) {
+          Blank()
+          Text('取消')
+            .fontSize(13)
+            .fontColor('#7A6E66')
+            .padding({ top: 8 })
+            .onClick(() => {
+              this.slotImportPasteOpen = false;
+            })
+          Text('解析')
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#E07A5F')
+            .padding({ top: 8 })
+            .onClick(() => {
+              this.startSlotImportText();
+            })
+        }
+        .width('100%')
+      }
+      .width('88%')
+      .padding(16)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
+  }
+
+  /** 从其他课表复制作息（与 Android 的「从其他课表复制作息」一致） */
+  @Builder
+  copySlotsCard() {
+    Column() {
+      Column({ space: 8 }) {
+        Row() {
+          Text('从哪张课表复制')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#3B3430')
+            .layoutWeight(1)
+          Text('取消')
+            .fontSize(12)
+            .fontColor('#E07A5F')
+            .onClick(() => {
+              this.copySlotsOpen = false;
+            })
+        }
+        .width('100%')
+
+        Text('会把当前课表的作息整表替换成所选课表的作息。')
+          .fontSize(10)
+          .fontColor('#A89C93')
+          .width('100%')
+
+        List({ space: 6 }) {
+          ForEach(this.copyableTimetables(), (t: Timetable) => {
+            ListItem() {
+              // 课表可能重名（导入时按文件名起名，同名文件会造出两张）：把「主」标出来，
+              // 至少能靠主课表区分一下
+              Text(t.name + ' · ' + t.totalWeeks + ' 周' + (t.isPrimary ? ' · 主' : ''))
+                .fontSize(13)
+                .fontColor('#3B3430')
+                .width('100%')
+                .padding(10)
+                .backgroundColor('#F6EFE8')
+                .borderRadius(8)
+                .onClick(() => {
+                  this.copySlotsFrom(t);
+                })
+            }
+          }, (t: Timetable) => 'copy' + t.id)
+        }
+        .width('100%')
+        .constraintSize({ maxHeight: 260 })
+        .scrollBar(BarState.Auto)
+      }
+      .width('88%')
+      .padding(16)
+      .backgroundColor('#FFFFFF')
+      .borderRadius(16)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
   }
 
   // ---------------------------------------------------------------- 课表页
@@ -953,7 +1437,8 @@ struct Index {
         .fontSize(13)
         .fontColor('#B4664C')
         .onClick(() => {
-          this.screen = 'home';
+          // 导入页的上一级是作息页；其余二级页都回主页
+          this.screen = this.screen === 'slotsimport' ? 'slots' : 'home';
           this.textDialog = '';
         })
       Text(title)
@@ -1516,21 +2001,11 @@ struct Index {
 
     try {
       const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
-      // 首次导入要先创建 WebView 并加载 pdf.js（这台模拟器实测十几秒），把原因说清楚
-      this.importStage = this.webReady ? '解析中…' : '准备解析器（首次较慢）…';
-      const ready: boolean = await this.ensureWeb();
-      if (!ready) {
-        throw new Error('解析器加载失败（30 秒内没就绪），请重试');
-      }
-      this.importStage = '解析中…';
+      // 回传的分流靠 pdfPurpose：这里一定是"导入课表"
       this.pdfPurpose = 'import';
-      // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
-      await this.runJs(PdfJs.CLEAR_SCRIPT);
-      this.webController.runJavaScript(PdfJs.extractCall(base64));
-      const payload: string = await this.pollPdfResult(60000);
-      if (payload.length === 0) {
-        throw new Error('解析超时（60 秒内没有结果）');
-      }
+      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
+        this.importStage = stage;
+      });
       // 开发期：把 pdf.js 的原样回传存进沙箱，`hdc file recv` 拉回桌面就能离线复现
       // （真实课表版式千奇百怪，只靠"装到设备看预览前 6 行"复盘太慢）
       if (BuildProfile.DEBUG) {
@@ -1542,6 +2017,34 @@ struct Index {
       this.importBusy = false;
       this.importError = err.message;
     }
+  }
+
+  /**
+   * 抽出 pdf.js 的回传文本（**课表导入与作息导入共用**）。
+   *
+   * 为什么必须共用：这一段包含"首次创建 WebView → 等就绪 → 清旧结果 → 发起 → 轮询"
+   * 五个时序步骤。任何一步顺序不对，症状都是"结果串了上一个文件"或"永远卡在解析中"；
+   * 两处各写一份，早晚有一份漏掉 `CLEAR_SCRIPT`。
+   *
+   * @param onStage 阶段性文案回调（首次加载 pdf.js 要十几秒，得让用户知道在等什么）
+   * @throws 解析器没就绪、或 60 秒没结果
+   */
+  private async extractPdfPayload(base64: string, onStage: (stage: string) => void): Promise<string> {
+    // 首次导入要先创建 WebView 并加载 pdf.js（这台模拟器实测十几秒），把原因说清楚
+    onStage(this.webReady ? '解析中…' : '准备解析器（首次较慢）…');
+    const ready: boolean = await this.ensureWeb();
+    if (!ready) {
+      throw new Error('解析器加载失败（30 秒内没就绪），请重试');
+    }
+    onStage('解析中…');
+    // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
+    await this.runJs(PdfJs.CLEAR_SCRIPT);
+    this.webController.runJavaScript(PdfJs.extractCall(base64));
+    const payload: string = await this.pollPdfResult(60000);
+    if (payload.length === 0) {
+      throw new Error('解析超时（60 秒内没有结果）');
+    }
+    return payload;
   }
 
   /** pdf.js 回传 → 选解析器 → 生成预览（**不写库**，等用户点按钮） */
@@ -1713,6 +2216,22 @@ struct Index {
       this.addChoiceOpen = false;
       return true;
     }
+    if (this.slotEditorOpen) {
+      this.slotEditorOpen = false;
+      return true;
+    }
+    if (this.slotImportPasteOpen) {
+      this.slotImportPasteOpen = false;
+      return true;
+    }
+    if (this.slotImportRawOpen) {
+      this.slotImportRawOpen = false;
+      return true;
+    }
+    if (this.copySlotsOpen) {
+      this.copySlotsOpen = false;
+      return true;
+    }
     if (this.semesterOpen) {
       this.semesterOpen = false;
       return true;
@@ -1738,7 +2257,8 @@ struct Index {
       return true;
     }
     if (this.screen !== 'home') {
-      this.screen = 'home';
+      // 导入页返回上一级是"作息页"，而不是直接回主页（否则校对到一半按返回会跳过作息页）
+      this.screen = this.screen === 'slotsimport' ? 'slots' : 'home';
       this.textDialog = '';
       return true;
     }
@@ -1880,80 +2400,6 @@ struct Index {
     }
   }
 
-  /** 点时间 → 系统时间选择器 → 写回这一节 */
-  private pickSlotTime(slot: TimeSlot, isStart: boolean): void {
-    const current: number = isStart ? slot.startMinute : slot.endMinute;
-    const now: Date = new Date();
-    const selected: Date = new Date(now.getFullYear(), now.getMonth(), now.getDate(),
-      Math.floor(current / 60), current % 60, 0);
-    this.getUIContext().showTimePickerDialog({
-      selected: selected,
-      useMilitaryTime: true,
-      onAccept: (value: TimePickerResult) => {
-        const minute: number = value.hour * 60 + value.minute;
-        this.applySlotTime(slot, isStart ? minute : slot.startMinute, isStart ? slot.endMinute : minute);
-      },
-    });
-  }
-
-  private async applySlotTime(slot: TimeSlot, startMinute: number, endMinute: number): Promise<void> {
-    if (endMinute <= startMinute) {
-      this.getUIContext().getPromptAction().showToast({ message: '结束时间要晚于开始时间', duration: 2000 });
-      return;
-    }
-    this.slotsBusy = true;
-    try {
-      const store: ScheduleStore = await this.openStore();
-      await store.saveSlot({
-        id: slot.id,
-        timetableId: slot.timetableId,
-        periodIndex: slot.periodIndex,
-        label: slot.label,
-        startMinute: startMinute,
-        endMinute: endMinute,
-      });
-      await this.load();
-    } catch (e) {
-      const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
-    }
-    this.slotsBusy = false;
-  }
-
-  /** 加一节：接在最后一节后面（隔 5 分钟），默认 45 分钟 */
-  private async addSlot(): Promise<void> {
-    this.slotsBusy = true;
-    try {
-      const store: ScheduleStore = await this.openStore();
-      const slots: TimeSlot[] = await store.readSlotsOf(store.currentId);
-      let lastEnd = 8 * 60;
-      let maxPeriod = 0;
-      for (const s of slots) {
-        if (s.endMinute > lastEnd) {
-          lastEnd = s.endMinute;
-        }
-        if (s.periodIndex > maxPeriod) {
-          maxPeriod = s.periodIndex;
-        }
-      }
-      const start: number = Math.min(lastEnd + 5, 23 * 60);
-      const end: number = Math.min(start + 45, 23 * 60 + 59);
-      await store.saveSlot({
-        id: 0,
-        timetableId: 0,
-        periodIndex: maxPeriod + 1,
-        label: '',
-        startMinute: start,
-        endMinute: end,
-      });
-      await this.load();
-    } catch (e) {
-      const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '加一节失败：' + err.message, duration: 2000 });
-    }
-    this.slotsBusy = false;
-  }
-
   /** 删除后**重新编号**，否则节次会出现空洞（网格按节次画行） */
   private async deleteSlot(slot: TimeSlot): Promise<void> {
     this.slotsBusy = true;
@@ -1997,6 +2443,420 @@ struct Index {
     } catch (e) {
       const err = e as Error;
       this.getUIContext().getPromptAction().showToast({ message: '恢复失败：' + err.message, duration: 2000 });
+    }
+    this.slotsBusy = false;
+  }
+
+  // ---------------------------------------------------------------- 作息：编辑
+
+  /** 进作息页时顺带把课表列表读出来（"从其他课表复制"要用它；只有一张时不显示按钮） */
+  private openSlots(): void {
+    this.screen = 'slots';
+    this.loadTimetablesForCopy();
+  }
+
+  private async loadTimetablesForCopy(): Promise<void> {
+    try {
+      const store: ScheduleStore = await this.openStore();
+      this.timetables = await store.allTimetables();
+    } catch (e) {
+      // 复制功能拿不到列表就不显示那个按钮 —— 不值得为它弹一个错误打断用户
+      console.warn('[Calss] 读取课表列表失败：' + (e as Error).message);
+    }
+  }
+
+  /** 库里的作息 → 逻辑层的最小行模型（加一节、复制都用它算） */
+  private slotRows(): SlotRow[] {
+    const out: SlotRow[] = [];
+    for (const s of this.slots()) {
+      out.push(SlotDraft.row(s.periodIndex, s.label, s.startMinute, s.endMinute));
+    }
+    return out;
+  }
+
+  private copyableTimetables(): Timetable[] {
+    const out: Timetable[] = [];
+    // 以 **store 的 currentId** 为准：它是"当前课表"的唯一事实来源（课表页的「当前」徽标也用它）。
+    // `snapshot.timetable.id` 在快照还没就绪时是 0 —— 那时会把当前课表自己也列进来。
+    const storeId: number = this.storeCurrentId();
+    const current: number = storeId > 0 ? storeId : this.currentTimetableId();
+    for (const t of this.timetables) {
+      if (t.id !== current) {
+        out.push(t);
+      }
+    }
+    return out;
+  }
+
+  /** 改一节已有的作息 */
+  private openSlotEditorForSlot(slot: TimeSlot): void {
+    this.slotEditorTarget = 'slot';
+    this.slotEditorSlotId = slot.id;
+    this.slotEditorHeading = '编辑第 ' + slot.periodIndex + ' 节';
+    this.slotEditorPeriod = String(slot.periodIndex);
+    this.slotEditorLabel = slot.label;
+    this.slotEditorStart = Minutes.format(slot.startMinute);
+    this.slotEditorEnd = Minutes.format(slot.endMinute);
+    this.slotEditorInferred = false;
+    this.slotEditorOpen = true;
+  }
+
+  /** 加一节：默认值由 `SlotDraft.nextRow` 算（接在最后一节后面、时长沿用） */
+  private openSlotEditorForNew(): void {
+    const next: SlotRow = SlotDraft.nextRow(this.slotRows());
+    this.slotEditorTarget = 'slot';
+    this.slotEditorSlotId = 0;
+    this.slotEditorHeading = '添加节次';
+    this.slotEditorPeriod = String(next.periodIndex);
+    this.slotEditorLabel = next.label;
+    this.slotEditorStart = Minutes.format(next.startMinute);
+    this.slotEditorEnd = Minutes.format(next.endMinute);
+    this.slotEditorInferred = false;
+    this.slotEditorOpen = true;
+  }
+
+  /** 校对页里改一行（只改内存，应用时才写库） */
+  private openSlotEditorForReview(index: number): void {
+    if (index < 0 || index >= this.slotImportRows.length) {
+      return;
+    }
+    const row: SlotRow = this.slotImportRows[index];
+    this.slotEditorTarget = 'review';
+    this.slotEditorSlotId = 0;
+    this.slotEditorReviewIndex = index;
+    this.slotEditorHeading = '第 ' + row.periodIndex + ' 节';
+    this.slotEditorPeriod = String(row.periodIndex);
+    this.slotEditorLabel = row.label;
+    this.slotEditorStart = Minutes.format(row.startMinute);
+    this.slotEditorEnd = Minutes.format(row.endMinute);
+    this.slotEditorInferred = row.inferred;
+    this.slotEditorOpen = true;
+  }
+
+  /** 弹窗保存：按 target 分流到"写库"或"改校对页内存" */
+  private async submitSlotEditor(row: SlotRow): Promise<void> {
+    if (this.slotEditorTarget === 'review') {
+      const next: SlotRow[] = this.slotImportRows.slice();
+      if (this.slotEditorReviewIndex >= 0 && this.slotEditorReviewIndex < next.length) {
+        next[this.slotEditorReviewIndex] = row;
+      }
+      this.slotImportRows = next.slice().sort((a: SlotRow, b: SlotRow) => a.periodIndex - b.periodIndex);
+      this.slotEditorOpen = false;
+      return;
+    }
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      // 节次号是网格的行号：写库前先确认没被别人占了（否则第 3 节会有两条时间）
+      const current: TimeSlot[] = await store.readSlotsOf(store.currentId);
+      for (const s of current) {
+        if (s.id !== this.slotEditorSlotId && s.periodIndex === row.periodIndex) {
+          this.getUIContext().getPromptAction().showToast({
+            message: '第 ' + row.periodIndex + ' 节已经存在了，换个节次号',
+            duration: 2000,
+          });
+          this.slotsBusy = false;
+          return;
+        }
+      }
+      let timetableId = 0;
+      for (const s of current) {
+        if (s.id === this.slotEditorSlotId) {
+          timetableId = s.timetableId;
+        }
+      }
+      await store.saveSlot({
+        id: this.slotEditorSlotId,
+        timetableId: timetableId,
+        periodIndex: row.periodIndex,
+        label: row.label,
+        startMinute: row.startMinute,
+        endMinute: row.endMinute,
+      });
+      this.slotEditorOpen = false;
+      await this.load();
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '保存失败：' + (e as Error).message,
+        duration: 2500,
+      });
+    }
+    this.slotsBusy = false;
+  }
+
+  /** 弹窗里的删除：改库的走原来的"删完重新编号"；校对页的只从内存里去掉一行 */
+  private async deleteSlotFromEditor(): Promise<void> {
+    if (this.slotEditorTarget === 'review') {
+      const next: SlotRow[] = [];
+      for (let i = 0; i < this.slotImportRows.length; i++) {
+        if (i !== this.slotEditorReviewIndex) {
+          next.push(this.slotImportRows[i]);
+        }
+      }
+      this.slotImportRows = next;
+      this.slotEditorOpen = false;
+      return;
+    }
+    const id: number = this.slotEditorSlotId;
+    this.slotEditorOpen = false;
+    for (const s of this.slots()) {
+      if (s.id === id) {
+        await this.deleteSlot(s);
+        return;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- 导入作息
+
+  private openSlotsImport(): void {
+    this.slotImportPhase = 'idle';
+    this.slotImportRows = [];
+    this.slotImportWarnings = [];
+    this.slotImportError = '';
+    this.slotImportRaw = [];
+    this.slotImportRawOpen = false;
+    this.slotImportPasteOpen = false;
+    this.slotImportPasteText = '';
+    this.slotImportStage = '';
+    this.slotImportSource = '';
+    this.screen = 'slotsimport';
+    this.loadTimetablesForCopy();
+  }
+
+  /** 通道一：图片 → OCR（系统 Core Vision Kit）。识别不出时给出可诊断的错误 */
+  private async startSlotImportImage(): Promise<void> {
+    if (this.slotImportStarting) {
+      return;
+    }
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = '拿不到 Context，稍后重试';
+      return;
+    }
+    this.slotImportStarting = true;
+    this.slotImportPhase = 'parsing';
+    this.slotImportStage = '打开相册…';
+    this.slotImportSource = '图片';
+    try {
+      const uri: string | null = await Ocr.pickImage();
+      if (uri === null) {
+        // 用户取消：回到入口，不算错误
+        this.slotImportPhase = 'idle';
+        this.slotImportStage = '';
+        return;
+      }
+      this.slotImportStage = '识别中…（首次可能要几秒）';
+      const outcome: OcrOutcome = await Ocr.readLines(ctx as common.UIAbilityContext, uri);
+      this.finishSlotParse(
+        outcome.lines,
+        '图片 ' + outcome.debug.width + '×' + outcome.debug.height +
+          '、方向 ' + ExifOrientation.describe(outcome.debug.orientation)
+      );
+    } catch (e) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = (e as Error).message;
+    } finally {
+      this.slotImportStarting = false;
+    }
+  }
+
+  /** 通道二：粘贴文本（完全离线，永远可用） */
+  private startSlotImportText(): void {
+    const text: string = this.slotImportPasteText;
+    this.slotImportPasteOpen = false;
+    this.slotImportPhase = 'parsing';
+    this.slotImportStage = '解析中…';
+    this.slotImportSource = '粘贴文本';
+    this.finishSlotParse(TimetableTextParser.linesFromText(text), '粘贴文本');
+  }
+
+  /** 通道三：PDF 文字层（复用课程导入那套 pdf.js） */
+  private async startSlotImportPdf(): Promise<void> {
+    if (this.slotImportStarting || this.importStarting) {
+      return;
+    }
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = '拿不到 Context，稍后重试';
+      return;
+    }
+    this.slotImportStarting = true;
+    this.slotImportPhase = 'parsing';
+    this.slotImportStage = '打开文件选择器…';
+    this.slotImportSource = 'PDF';
+    try {
+      const picked: PickedPdf | null = await PdfFile.pick(ctx as common.UIAbilityContext);
+      if (picked === null) {
+        this.slotImportPhase = 'idle';
+        this.slotImportStage = '';
+        return;
+      }
+      this.slotImportStage = '读取文件…';
+      const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
+      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
+        this.slotImportStage = stage;
+      });
+      const result: PdfExtractResult = PdfRunText.parse(payload);
+      if (!result.ok) {
+        throw new Error('解析失败：' + result.error);
+      }
+      if (result.runs.length === 0) {
+        throw new Error('这份 PDF 里没有可读文字（可能是扫描件）。扫描件请用「识别图片」。');
+      }
+      // 碎片 → 视觉行（`PdfRunText.toLines`），再交给作息解析器
+      const textLines: string[] = PdfRunText.toLines(result.runs);
+      this.finishSlotParse(
+        TimetableTextParser.linesFromText(textLines.join('\n')),
+        'PDF（' + picked.name + '）'
+      );
+    } catch (e) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = (e as Error).message;
+    } finally {
+      this.slotImportStarting = false;
+    }
+  }
+
+  /** 三条通道的共用出口：解析 → 校对页（**永不跳过校对、永不直接写库**） */
+  private finishSlotParse(lines: OcrLine[], source: string): void {
+    this.slotImportSource = source;
+    if (lines.length === 0) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = '没能认出任何文字行。换一张更清楚的图，或改用「粘贴文本」。';
+      return;
+    }
+    const parsed: TimetableParseResult = TimetableTextParser.parse(lines);
+    this.slotImportRaw = parsed.rawLines;
+    if (parsed.periods.length === 0) {
+      this.slotImportPhase = 'error';
+      // 解析器的兜底文案（"没能从图片里认出作息时间，可以在下面手动添加节次"）在别的通道里
+      // 既指错了主语、也指错了界面；这里换成按通道的说法，只把**具体**原因留在括号里
+      // （如"有 3 处时间不合法"）。解析器的兜底句固定是 warnings 的最后一条。
+      const reasons: string[] = [];
+      for (const w of parsed.warnings) {
+        if (!w.startsWith('没能从图片里')) {
+          reasons.push(w);
+        }
+      }
+      const detail: string = reasons.length > 0 ? '（' + reasons.join('；') + '）' : '';
+      this.slotImportError = '没能在' + this.slotImportSourceName() + '里认出作息时间' + detail +
+        '。每行要同时包含节次号和起止时间，例如「1 8:00-8:45」；也可以改用「粘贴文本」把文字贴进来。';
+      return;
+    }
+    const rows: SlotRow[] = [];
+    for (const p of parsed.periods) {
+      rows.push(SlotDraft.row(p.periodIndex, p.group, p.startMinute, p.endMinute, p.inferred));
+    }
+    this.slotImportRows = rows;
+    // 只留解析器自己的警告。"比现有作息少几节"那条是**会变的**（补一节之后就不准了），
+    // 放在界面里现算（见 `slotImportReview` 的 missingHint）
+    this.slotImportWarnings = parsed.warnings.slice();
+    this.slotImportStage = '';
+    this.slotImportPhase = 'review';
+  }
+
+  /** 校对页上"比现有作息少几节"的提示（随行数变化现算） */
+  private slotImportMissingHint(): string {
+    return SlotDraft.missingHint(this.slots().length, this.slotImportRows.length);
+  }
+
+  /** 通道名 → 「这张图片」/「这份 PDF」/「粘贴的文本」，用在报错文案里 */
+  private slotImportSourceName(): string {
+    const s: string = this.slotImportSource;
+    if (s.startsWith('PDF')) {
+      return '这份 PDF';
+    }
+    if (s.startsWith('图片')) {
+      return '这张图片';
+    }
+    if (s.startsWith('粘贴')) {
+      return '粘贴的文本';
+    }
+    return '这份内容';
+  }
+
+  /** 校对页「补一节」：接在最后一节之后，节次号顺延 */
+  private addReviewSlotRow(): void {
+    const next: SlotRow = SlotDraft.nextRow(this.slotImportRows);
+    this.slotImportRows = this.slotImportRows.concat([next]).sort(
+      (a: SlotRow, b: SlotRow) => a.periodIndex - b.periodIndex
+    );
+  }
+
+  /** 应用：排序去重后整表替换当前课表的作息（课程/安排都不动） */
+  private async applySlotImport(): Promise<void> {
+    if (this.slotsBusy || this.slotImportRows.length === 0) {
+      return;
+    }
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      const rows: SlotRow[] = SlotDraft.sortedUnique(this.slotImportRows);
+      const slots: TimeSlot[] = [];
+      for (const r of rows) {
+        slots.push({
+          id: 0,
+          timetableId: 0,
+          periodIndex: r.periodIndex,
+          label: r.label,
+          startMinute: r.startMinute,
+          endMinute: r.endMinute,
+        });
+      }
+      await store.replaceSlots(slots);
+      await this.load();
+      this.slotImportPhase = 'idle';
+      this.screen = 'slots';
+      this.getUIContext().getPromptAction().showToast({
+        message: '已导入 ' + slots.length + ' 节作息',
+        duration: 2000,
+      });
+    } catch (e) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = '写入失败：' + (e as Error).message;
+    }
+    this.slotsBusy = false;
+  }
+
+  private async copySlotsFrom(source: Timetable): Promise<void> {
+    this.copySlotsOpen = false;
+    this.slotsBusy = true;
+    try {
+      const store: ScheduleStore = await this.openStore();
+      const sourceSlots: TimeSlot[] = await store.readSlotsOf(source.id);
+      if (sourceSlots.length === 0) {
+        this.getUIContext().getPromptAction().showToast({
+          message: '「' + source.name + '」还没有作息可复制',
+          duration: 2000,
+        });
+        this.slotsBusy = false;
+        return;
+      }
+      const copied: TimeSlot[] = [];
+      for (const s of sourceSlots) {
+        copied.push({
+          id: 0,
+          timetableId: 0,
+          periodIndex: s.periodIndex,
+          label: s.label,
+          startMinute: s.startMinute,
+          endMinute: s.endMinute,
+        });
+      }
+      await store.replaceSlots(copied);
+      await this.load();
+      this.getUIContext().getPromptAction().showToast({
+        message: '已复制 ' + copied.length + ' 节',
+        duration: 2000,
+      });
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({
+        message: '复制失败：' + (e as Error).message,
+        duration: 2500,
+      });
     }
     this.slotsBusy = false;
   }

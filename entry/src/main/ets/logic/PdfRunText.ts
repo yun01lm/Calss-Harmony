@@ -30,6 +30,71 @@ export class PdfRunText {
   /** 每行固定 5 个数值字段 + 1 个文本字段 */
   static readonly FIELD_COUNT: number = 6;
 
+  /**
+   * 把带坐标的片段还原成"视觉上的行"（左→右、上→下）。
+   *
+   * 为什么要这一步：**作息表导入**（`TimetableTextParser`）吃的是纯文本行，
+   * 而 pdf.js 给的是碎片（`1` / `8:00` / `-` / `8:45` 各是一个片段）。
+   * 不还原就直接 join，会得到 `18:00-8:45` 这种拼错的时间。
+   *
+   * 坐标语义：`viewer.html` 回传的是**视口坐标**（y 向下增大），所以 y 越小越靠上。
+   * 同一行的判定用 `max(2, fontSize/2)` 的容差 —— PDF 里同一行的字基线会差零点几，
+   * 但不会差半个字高。
+   */
+  static toLines(runs: PdfTextRun[]): string[] {
+    const sorted: PdfTextRun[] = runs.slice().sort((a: PdfTextRun, b: PdfTextRun) => {
+      if (a.page !== b.page) {
+        return a.page - b.page;
+      }
+      if (a.y !== b.y) {
+        return a.y - b.y;
+      }
+      return a.x - b.x;
+    });
+
+    const lines: string[] = [];
+    let bucket: PdfTextRun[] = [];
+    let bucketPage: number = 0;
+    let bucketY: number = 0;
+    let bucketTolerance: number = 2;
+
+    const flush = (): void => {
+      if (bucket.length === 0) {
+        return;
+      }
+      bucket.sort((a: PdfTextRun, b: PdfTextRun) => a.x - b.x);
+      const parts: string[] = [];
+      for (const r of bucket) {
+        const text: string = r.text.trim();
+        if (text.length > 0) {
+          parts.push(text);
+        }
+      }
+      if (parts.length > 0) {
+        lines.push(parts.join(' '));
+      }
+      bucket = [];
+    };
+
+    for (const run of sorted) {
+      if (run.text.trim().length === 0) {
+        continue;
+      }
+      const tolerance: number = Math.max(2, run.fontSize / 2);
+      const sameLine: boolean = bucket.length > 0 && run.page === bucketPage &&
+        Math.abs(run.y - bucketY) <= Math.max(tolerance, bucketTolerance);
+      if (!sameLine) {
+        flush();
+        bucketPage = run.page;
+        bucketY = run.y;
+        bucketTolerance = tolerance;
+      }
+      bucket.push(run);
+    }
+    flush();
+    return lines;
+  }
+
   static parse(payload: string): PdfExtractResult {
     const runs: PdfTextRun[] = [];
     if (payload.length === 0) {
