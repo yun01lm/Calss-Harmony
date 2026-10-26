@@ -17,7 +17,7 @@
  */
 import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, defaultSlots, type SlotSeed } from './schema.ts';
 import { pickStartupTimetable, type TimetableChoice } from './startupRule.ts';
-import { courseKeyOf, mergeCourseItems } from './CourseMerge.ts';
+import { identityOf, mergeCourseItems, sameCourse, type CourseIdentity } from './CourseMerge.ts';
 import { WeekCalculator } from '../logic/WeekCalculator.ts';
 import { type SqlRow, type SqlRunner, type SqlStatement } from './SqlRunner.ts';
 import {
@@ -477,19 +477,25 @@ export class ScheduleStore {
   }
 
   /**
-   * **合并导入**：同名课程（名称+教师+地点）用新版**更新**其上课时段，其余新增。
+   * **合并导入**：同名的课（名称+教师相同、且教学班有交集）用新版**更新**它的上课时段，
+   * 其余新增。
    *
    * 比"同名直接跳过"正确：那样子课程换了星期/节次/周次也不会被更新，
    * 相当于永远留着第一次导入的旧信息。
+   *
+   * 注意这里不能再用 `Map<键, 课程>` 索引：v5 起"是不是同一门课"靠**教学班集合有交集**，
+   * 不是字符串相等（两张课表可能一门写 `计科2509班`、另一门写 `计科2509班;计科2510班`）。
    */
   async mergeCourses(items: CourseWithSchedules[]): Promise<MergeResult> {
     const timetableId: number = await this.requireCurrent();
-    // 先按「名称+教师+教学班」归并：解析器是"一格一条"输出，一门课上两次就是两条，
-    // 不归并的话本次批次自己就会插出两条同名课（键索引只在开头建一次，第二条查不到）
+    // 先按同一套规则归并：解析器是"一格一条"输出，一门课上两次就是两条，
+    // 不归并的话本次批次自己就会插出两条同名课
     const coalesced: CourseWithSchedules[] = mergeCourseItems(items).items;
     const existing: Course[] = await this.readCoursesOf(timetableId);
     const existingSchedules: CourseSchedule[] = await this.readSchedulesOf(timetableId);
-    const byKey: Map<string, Course> = new Map<string, Course>();
+
+    // 库里每一门课的"身份"（会随着被更新而改写，避免两条导入命中同一门旧课）
+    const oldItems: OldCourse[] = [];
     for (const c of existing) {
       const own: CourseSchedule[] = [];
       for (const s of existingSchedules) {
@@ -497,19 +503,26 @@ export class ScheduleStore {
           own.push(s);
         }
       }
-      byKey.set(courseKeyOf(c, own), c);
+      oldItems.push({ course: c, identity: identityOf(c, own) });
     }
 
     let added = 0;
     let updated = 0;
     const steps: SqlStatement[] = [];
     for (const item of coalesced) {
-      const key: string = courseKeyOf(item.course, item.schedules);
-      const old: Course | undefined = byKey.get(key);
-      if (old === undefined) {
+      const identity: CourseIdentity = identityOf(item.course, item.schedules);
+      let hit: number = -1;
+      for (let i = 0; i < oldItems.length; i++) {
+        if (sameCourse(oldItems[i].identity, identity)) {
+          hit = i;
+          break;
+        }
+      }
+      if (hit < 0) {
         appendInsertCourse(steps, timetableId, item);
         added++;
       } else {
+        const old: Course = oldItems[hit].course;
         // 换掉它的全部上课时段（星期/节次/周次/教室都可能变），保留颜色与备注
         steps.push({ sql: 'DELETE FROM course_schedules WHERE courseId = ?', params: [old.id] });
         for (const s of item.schedules) {
@@ -527,6 +540,9 @@ export class ScheduleStore {
             params: [item.course.category, old.id],
           });
         }
+        // 这门旧课的身份跟着换成新版：同一批导入里若还有一条"和它同名但教学班不同"的，
+        // 不应该再命中它（否则两条都往同一门课里写，后一条把前一条的时段覆盖掉）
+        oldItems[hit] = { course: old, identity: identity };
         updated++;
       }
     }
@@ -824,7 +840,16 @@ function toEvent(row: SqlRow): CustomEvent {
 
 // ---------------------------------------------------------------- 小工具
 
-/** 合并导入识别"同一门课"的键在 `CourseMerge.courseKeyOf`（唯一实现，别在这里再写一份） */
+/**
+ * 合并导入里"库里已有的课" + 它的身份。
+ *
+ * 判定"是不是同一门课"的唯一实现是 `CourseMerge.sameCourse`（教学班集合有交集），
+ * 别在这里再写一份。
+ */
+interface OldCourse {
+  readonly course: Course;
+  readonly identity: CourseIdentity;
+}
 
 /**
  * 追加"插入一门课 + 它的全部时段"。

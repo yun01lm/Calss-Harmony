@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { courseKeyOf, mergeCourseItems } from '../entry/src/main/ets/data/CourseMerge.ts';
+import { courseKeyOf, identityOf, mergeCourseItems, sameCourse } from '../entry/src/main/ets/data/CourseMerge.ts';
 import type { CourseWithSchedules } from '../entry/src/main/ets/data/models.ts';
 
 const WEEKS_1_TO_16 = 65535;
@@ -157,4 +157,65 @@ test('教学班写没写不影响同组判定（都为空就按"没有班级"算
     item('体育Ⅲ-网球', [[6, 7, 8, WEEKS_1_TO_16]], '沈建昆', '操场', ''),
   ]);
   assert.equal(out.items.length, 1);
+});
+
+// ---------------------------------------------------------------- v5：教学班集合交集
+
+test('v5：教学班有交集 → 同一门课（合班上课，不要拆成两门）', () => {
+  // 真实写法：同一门课一次写一个班、一次写合班的两个班
+  const out = mergeCourseItems([
+    item('高等数学（A）', [[1, 1, 2, WEEKS_1_TO_16]], '张老师', '教三-101', '计科2509班'),
+    item('高等数学（A）', [[3, 3, 4, WEEKS_1_TO_16]], '张老师', '教三-201', '计科2509班;计科2510班'),
+  ]);
+  assert.equal(out.items.length, 1, '共享 计科2509班，是同一门课');
+  assert.equal(out.items[0].schedules.length, 2);
+});
+
+test('v5：教学班完全没有交集 → 仍然是两门课（同老师带两个班）', () => {
+  const out = mergeCourseItems([
+    item('高等数学（A）', [[1, 1, 2, WEEKS_1_TO_16]], '张老师', '教三-101', '计科2509班'),
+    item('高等数学（A）', [[2, 3, 4, WEEKS_1_TO_16]], '张老师', '教三-201', '软件2501班'),
+  ]);
+  assert.equal(out.items.length, 2);
+});
+
+test('v5：只有一边写了教学班 → 不合并（宁可拆开，也不要删一门连带另一门）', () => {
+  const out = mergeCourseItems([
+    item('离散数学（A）', [[1, 1, 2, WEEKS_1_TO_16]], '李老师', '教三-101', '计科2509班'),
+    item('离散数学（A）', [[2, 3, 4, WEEKS_1_TO_16]], '李老师', '教三-101', ''),
+  ]);
+  assert.equal(out.items.length, 2);
+});
+
+test('v5：交集是传递的 —— A∩N、B∩N 会并成一门（不能留两个"同一门课"）', () => {
+  const out = mergeCourseItems([
+    item('概率论', [[1, 1, 2, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2509班'),
+    item('概率论', [[2, 3, 4, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2510班'),
+    item('概率论', [[3, 5, 6, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2509班;计科2510班'),
+  ]);
+  assert.equal(out.items.length, 1);
+  assert.equal(out.items[0].schedules.length, 3);
+});
+
+test('v5：名称或教师不同仍然不合并（交集只在校验通过之后才看）', () => {
+  const out = mergeCourseItems([
+    item('概率论', [[1, 1, 2, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2509班'),
+    item('概率论', [[2, 3, 4, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2509班'), // 同 → 合并
+    item('数理统计', [[3, 5, 6, WEEKS_1_TO_16]], '史老师', '教三-101', '计科2509班'),
+  ]);
+  assert.equal(out.items.length, 2);
+  assert.equal(out.items[0].schedules.length, 2);
+});
+
+test('v5：sameCourse / identityOf 的口径与 mergeCourseItems 一致', () => {
+  const a = identityOf(course('甲', '张', ''), []);
+  const b = identityOf(course('甲', '张', ''), [
+    { id: 0, courseId: 0, dayOfWeek: 1, startPeriod: 1, endPeriod: 2, weekMask: 1, location: '', classGroup: '计科2509班' },
+  ]);
+  assert.equal(sameCourse(a, b), false, '一边为空 → 不是同一门');
+  const c = identityOf(course('甲', '张', ''), [
+    { id: 0, courseId: 0, dayOfWeek: 1, startPeriod: 1, endPeriod: 2, weekMask: 1, location: '', classGroup: '计科2509班;计科2510班' },
+  ]);
+  assert.equal(sameCourse(b, c), true, '有交集 → 同一门');
+  assert.equal(sameCourse(a, a), true, '两边都为空 → 同一门');
 });

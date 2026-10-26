@@ -632,3 +632,70 @@ test('saveCourse：教学班跟着时段存（v4）', async () => {
     assert.equal(s.classGroup, '', '没填班级就是空串，不能是 undefined');
   }
 });
+
+// ---------------------------------------------------------------- 合并导入：v5 教学班交集
+
+test('mergeCourses：库里那门写"合班"、导入这条写单班 → 命中同一门，更新而不是新增', async () => {
+  const { store } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+
+  // 库里已有：高等数学，教学班写着两个班（合班）
+  await store.replaceCourses([
+    bundle(course('高等数学（A）', { teacher: '张老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 1, startPeriod: 1, endPeriod: 2, weekMask: 65535, location: '101', classGroup: '计科2509班;计科2510班' },
+    ]),
+  ]);
+  const before = await store.readCoursesOf(store.currentId);
+  assert.equal(before.length, 1);
+
+  // 导入：同一门课，这次只写了 计科2509班，时间也变了
+  const r = await store.mergeCourses([
+    bundle(course('高等数学（A）', { teacher: '张老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 3, startPeriod: 3, endPeriod: 4, weekMask: 65535, location: '202', classGroup: '计科2509班' },
+    ]),
+  ]);
+  assert.equal(r.added, 0, '有交集 → 命中已有的那门');
+  assert.equal(r.updated, 1);
+
+  const after = await store.readCoursesOf(store.currentId);
+  assert.equal(after.length, 1, '不该多出一门同名课');
+  const scheds = await store.readSchedulesOf(store.currentId);
+  assert.equal(scheds.length, 1);
+  assert.equal(scheds[0].dayOfWeek, 3, '时段被整段替换成新版');
+});
+
+test('mergeCourses：教学班毫无交集 → 新增，不动库里那门（删一门不会连带另一门）', async () => {
+  const { store } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  await store.replaceCourses([
+    bundle(course('高等数学（A）', { teacher: '张老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 1, startPeriod: 1, endPeriod: 2, weekMask: 65535, location: '101', classGroup: '计科2509班' },
+    ]),
+  ]);
+
+  const r = await store.mergeCourses([
+    bundle(course('高等数学（A）', { teacher: '张老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 2, startPeriod: 5, endPeriod: 6, weekMask: 65535, location: '202', classGroup: '软件2501班' },
+    ]),
+  ]);
+  assert.equal(r.added, 1);
+  assert.equal(r.updated, 0);
+  assert.equal((await store.readCoursesOf(store.currentId)).length, 2);
+});
+
+test('mergeCourses：同一批里两条互不相交 → 各插一门（不会互相覆盖）', async () => {
+  const { store } = makeStore();
+  await store.ensureCurrentTimetable(NOW);
+  const r = await store.mergeCourses([
+    bundle(course('线性代数', { teacher: '李老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 1, startPeriod: 1, endPeriod: 2, weekMask: 65535, location: 'A', classGroup: '计科2509班' },
+    ]),
+    bundle(course('线性代数', { teacher: '李老师' }), [
+      { id: 0, courseId: 0, dayOfWeek: 2, startPeriod: 3, endPeriod: 4, weekMask: 65535, location: 'B', classGroup: '软件2501班' },
+    ]),
+  ]);
+  assert.equal(r.added, 2);
+  assert.equal((await store.readCoursesOf(store.currentId)).length, 2);
+  const scheds = await store.readSchedulesOf(store.currentId);
+  assert.equal(scheds.length, 2, '两门课各自的时段都在');
+});
