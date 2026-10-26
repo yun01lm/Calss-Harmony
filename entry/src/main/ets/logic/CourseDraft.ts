@@ -118,14 +118,6 @@ export class CourseDraft {
     }
   }
 
-  /** 编辑框里显示的长度摘要，如「周一 3-4 节 · 1-16 周」 */
-  static rowSummary(row: DraftRow): string {
-    return (
-      CourseDraft.dayName(row.day) +
-      ' ' + row.start + '-' + row.end + ' 节 · ' +
-      (row.weeks.trim().length === 0 ? '未填周次' : row.weeks.trim()) + ' 周'
-    );
-  }
 
   static clampDay(day: number): number {
     if (!Number.isFinite(day)) {

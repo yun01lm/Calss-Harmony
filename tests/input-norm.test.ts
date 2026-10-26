@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { Minutes } from '../entry/src/main/ets/logic/Minutes.ts';
 import { InputNorm } from '../entry/src/main/ets/logic/InputNorm.ts';
 
 test('halfWidth：全角数字与符号转半角', () => {
@@ -107,4 +108,20 @@ test('幂等性：规范化结果再跑一遍不变', () => {
     assert.notEqual(once, null);
     assert.equal(InputNorm.weeks(once as string), once, `周次幂等失败：${raw}`);
   }
+});
+
+// ---------------------------------------------------------------- Minutes.of（P6 去重后）
+
+test('Minutes.of：范围校验只有一份，边界与非法值都明确', () => {
+  assert.equal(Minutes.of(0, 0), 0);
+  assert.equal(Minutes.of(23, 59), 23 * 60 + 59);
+  assert.equal(Minutes.of(24, 0), null);
+  assert.equal(Minutes.of(-1, 0), null);
+  assert.equal(Minutes.of(8, 60), null);
+  assert.equal(Minutes.of(8, -1), null);
+  assert.equal(Minutes.of(1.5, 0), null, '小数小时不是合法时间');
+  // 与 Minutes.parse 的口径一致：手输与解析走同一套范围
+  assert.equal(Minutes.parse('24:00'), null);
+  assert.equal(Minutes.parse('8:60'), null);
+  assert.equal(Minutes.parse('8:05'), Minutes.of(8, 5));
 });

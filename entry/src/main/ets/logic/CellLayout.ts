@@ -63,12 +63,25 @@ export class CellLayout {
   static readonly GUTTER_TIME_MAX_FONT_SCALE: number = 1.3;
 
   /**
+   * 窄格阈值（vp）：两门课撞在同一时段时，每门只剩约 22vp 宽。
+   *
+   * 这么窄的时候中文**一个字都占满一行**，于是课名被排成一列竖字（"算/法/分/析"），
+   * 又难看又难读。窄格改成"小字号 + 最多两行 + 省略号"，至少读得出前两个字。
+   */
+  static readonly NARROW_WIDTH: number = 40;
+
+  /** 窄格用的字号（fp） */
+  static readonly NARROW_FONT_SIZE: number = 8;
+
+  /**
    * 计算一个格子能显示多少行文字。
    *
    * @param cellHeightVp 格子高度（vp，含内边距）
    * @param fontScale 系统字体缩放系数（鸿蒙取 `configuration.fontSizeScale`）
+   * @param cellWidthVp 格子宽度（vp）。< `NARROW_WIDTH` 时按"窄格"处理；
+   *                    不传（0）表示不关心宽度，行为与旧版一致
    */
-  static cellLines(cellHeightVp: number, fontScale: number): CellLines {
+  static cellLines(cellHeightVp: number, fontScale: number, cellWidthVp: number = 0): CellLines {
     const safeScale = fontScale > 0 ? fontScale : 1;
     const available = Math.max(0, cellHeightVp - CellLayout.CELL_PADDING) / safeScale;
     const roomy = cellHeightVp >= CellLayout.ROOMY_HEIGHT;
@@ -101,6 +114,23 @@ export class CellLayout {
     }
 
     const used = lineHeight * nameLines + loc * locationLines;
+    const narrow: boolean = cellWidthVp > 0 && cellWidthVp < CellLayout.NARROW_WIDTH;
+    if (narrow) {
+      // 窄格：字号再降一档、最多两行、不放教室 —— 否则中文会被排成一列竖字
+      const narrowNameLines: number = Math.min(nameLines, 2);
+      const narrowUsed: number = lineHeight * narrowNameLines;
+      const outNarrow: CellLines = {
+        nameLines: narrowNameLines,
+        locationLines: 0,
+        used: narrowUsed,
+        available,
+        clipped: narrowUsed > available + 1e-9,
+        roomy,
+        nameFontSize: CellLayout.NARROW_FONT_SIZE,
+        lineHeight,
+      };
+      return outNarrow;
+    }
     const out: CellLines = {
       nameLines,
       locationLines,

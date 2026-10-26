@@ -3,6 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!--
+    CSP：这个页面只做一件事（把 PDF 文本连同坐标吐回 ArkTS），不需要联网、不需要加载外部资源。
+    `unsafe-eval` 是 pdf.js 3.x 的字体/CMap 解析要用的（`isEvalSupported:false` 已经关掉了
+    它那条 eval 路径，这里保留是为了不改变已验证过的行为）。
+    不写 CSP 的话，一旦 rawfile 被换掉/被注入，页面就能任意加载外部脚本 —— 威胁很弱，但不是零。
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; connect-src data: blob:; worker-src 'self' blob:; font-src data: blob:;" />
   <title>pdf.js worker page</title>
   <style>
     html, body { margin: 0; padding: 0; background: #fff; font: 12px sans-serif; }
@@ -103,44 +111,64 @@
      * 不配这两个参数，它会把整页文字**整个丢掉** —— 实测真实文件得到 "2 页 / 0 个文本项"。
      * cmaps/ 目录里只放了 GB 系列（约 136KB），没有全量 2MB。
      */
-    const doc = await pdfjsLib.getDocument({
-      data: data,
-      cMapUrl: 'cmaps/',
-      cMapPacked: true,
-      CMapReaderFactory: InlineCMapReaderFactory,
-      isEvalSupported: false,
-    }).promise;
-    const lines = ['OK'];
-    let totalItems = 0;
-    let emptyItems = 0;
-    for (let p = 1; p <= doc.numPages; p++) {
-      const page = await doc.getPage(p);
-      const viewport = page.getViewport({ scale: 1 });
-      const content = await page.getTextContent();
-      for (const item of content.items) {
-        totalItems++;
-        // 只有带 str 的才是文本项（markContent 之类的标记项没有 str）
-        if (typeof item.str !== 'string' || item.str.length === 0) {
-          emptyItems++;
-          continue;
+    let doc = null;
+    try {
+      doc = await pdfjsLib.getDocument({
+        data: data,
+        cMapUrl: 'cmaps/',
+        cMapPacked: true,
+        CMapReaderFactory: InlineCMapReaderFactory,
+        isEvalSupported: false,
+      }).promise;
+      const lines = ['OK'];
+      let totalItems = 0;
+      let emptyItems = 0;
+      for (let p = 1; p <= doc.numPages; p++) {
+        const page = await doc.getPage(p);
+        const viewport = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        for (const item of content.items) {
+          totalItems++;
+          // 只有带 str 的才是文本项（markContent 之类的标记项没有 str）
+          if (typeof item.str !== 'string' || item.str.length === 0) {
+            emptyItems++;
+            continue;
+          }
+          // 用 viewport 的变换把文本空间坐标映射到"左上原点、y 向下"的页面坐标，
+          // 与 logic/PdfModels.ts 的 PdfTextRun 约定一致
+          const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
+          const x = m[4];
+          const y = m[5];
+          const fontSize = Math.hypot(m[2], m[3]);
+          const endX = x + (item.width || 0);
+          lines.push(
+            p + '\t' + x.toFixed(2) + '\t' + y.toFixed(2) + '\t' + endX.toFixed(2) + '\t' +
+            fontSize.toFixed(2) + '\t' + item.str.replace(/[\t\r\n]/g, ' ')
+          );
         }
-        // 用 viewport 的变换把文本空间坐标映射到"左上原点、y 向下"的页面坐标，
-        // 与 logic/PdfModels.ts 的 PdfTextRun 约定一致
-        const m = pdfjsLib.Util.transform(viewport.transform, item.transform);
-        const x = m[4];
-        const y = m[5];
-        const fontSize = Math.hypot(m[2], m[3]);
-        const endX = x + (item.width || 0);
-        lines.push(
-          p + '\t' + x.toFixed(2) + '\t' + y.toFixed(2) + '\t' + endX.toFixed(2) + '\t' +
-          fontSize.toFixed(2) + '\t' + item.str.replace(/[\t\r\n]/g, ' ')
-        );
+        page.cleanup();
       }
-      page.cleanup();
+      return {
+        lines: lines,
+        numPages: doc.numPages,
+        totalItems: totalItems,
+        emptyItems: emptyItems,
+      };
+    } finally {
+      /*
+       * 必须放 finally：`getDocument` 成功之后，`getPage`/`getTextContent` 抛错时
+       * （加密 PDF、损坏的页面树）以前会**漏掉 destroy** —— worker 里的文档对象与
+       * 解析出来的字体缓存都留着，导入几次之后内存只涨不降。
+       * destroy 自己失败不能再往外抛：会把真正的解析错误盖掉。
+       */
+      if (doc !== null) {
+        try {
+          await doc.destroy();
+        } catch (e2) {
+          log('释放文档失败：' + String(e2));
+        }
+      }
     }
-    const numPages = doc.numPages;
-    await doc.destroy();
-    return { lines: lines, numPages: numPages, totalItems: totalItems, emptyItems: emptyItems };
   }
 
   // ArkTS 调这个函数开始解析

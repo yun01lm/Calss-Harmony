@@ -176,12 +176,10 @@ test('最后一节新建时止节不越界', () => {
   assert.equal(row.end, 12);
 });
 
-test('dayName 与 rowSummary 的显示', () => {
+test('dayName 的显示', () => {
   assert.equal(CourseDraft.dayName(1), '周一');
   assert.equal(CourseDraft.dayName(7), '周日');
   assert.equal(CourseDraft.dayName(99), '周日');
-  assert.equal(CourseDraft.rowSummary(CourseDraft.row(2, 3, 4, '1-16')), '周二 3-4 节 · 1-16 周');
-  assert.equal(CourseDraft.rowSummary(CourseDraft.row(2, 3, 4, '  ')), '周二 3-4 节 · 未填周次 周');
 });
 
 // ---------------------------------------------------------------- 开学日解析

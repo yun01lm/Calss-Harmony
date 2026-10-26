@@ -1,3 +1,4 @@
+import { SlotDraft } from './SlotDraft.ts';
 /**
  * 作息表文本解析：从 OCR 文本行还原「第几节 → 起止时间」。
  * 移植自 Android `ocr/TimetableTextParser.kt`（行为逐条对齐）。
@@ -698,12 +699,9 @@ export class TimetableTextParser {
     if (best !== null) {
       return best;
     }
-    if (period >= 1 && period <= 4) {
-      return '上午';
-    }
-    if (period >= 5 && period <= 8) {
-      return '下午';
-    }
-    return '晚上';
+    // 兜底口径只有一份：SlotDraft.groupOf（1-4 上午 / 5-8 下午 / 其余晚上）。
+    // 两处各写一遍的话，"作息页新增一节"与"OCR 行没识别到分组"会给出不同的分组名，
+    // 同一行数据在界面和数据里就是两个样子。
+    return SlotDraft.groupOf(period);
   }
 }

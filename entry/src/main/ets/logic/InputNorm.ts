@@ -5,6 +5,7 @@
  * 实在无法理解的才返回 null，由界面标红并写明格式要求。所有函数幂等。
  */
 import { Minutes } from './Minutes.ts';
+import { WeekCalculator } from './WeekCalculator.ts';
 import { WeekMasks } from './WeekMasks.ts';
 
 export class InputNorm {
@@ -71,10 +72,9 @@ export class InputNorm {
       return null;
     }
 
-    if (h < 0 || h > 23 || m < 0 || m > 59) {
-      return null;
-    }
-    return Minutes.format(h * 60 + m);
+    // 范围校验只有 `Minutes.of` 一份（与 PDF/OCR 的解析共用）
+    const total: number | null = Minutes.of(h, m);
+    return total === null ? null : Minutes.format(total);
   }
 
   /**
@@ -92,21 +92,15 @@ export class InputNorm {
     const y = Number.parseInt(m[1], 10);
     const mo = Number.parseInt(m[2], 10);
     const d = Number.parseInt(m[3], 10);
-    if (mo < 1 || mo > 12 || d < 1 || d > 31) {
+    // 日历合法性（含"2 月 30 日不许滚动成 3 月 2 日"的回读校验）只有
+    // `WeekCalculator.epochDayOfIso` 一份：先拼成 ISO 再交给它，避免两处各判一次
+    const iso: string =
+      `${y}-${mo < 10 ? '0' : ''}${mo}-${d < 10 ? '0' : ''}${d}`;
+    const epochDay: number | null = WeekCalculator.epochDayOfIso(iso);
+    if (epochDay === null) {
       return null;
     }
-    // JS 的 Date 会把 2 月 30 日"滚动"成 3 月 2 日，必须回读校验
-    const probe = new Date(Date.UTC(y, mo - 1, d));
-    if (
-      probe.getUTCFullYear() !== y ||
-      probe.getUTCMonth() + 1 !== mo ||
-      probe.getUTCDate() !== d
-    ) {
-      return null;
-    }
-    const mm = mo < 10 ? `0${mo}` : `${mo}`;
-    const dd = d < 10 ? `0${d}` : `${d}`;
-    return `${y}-${mm}-${dd}`;
+    return iso;
   }
 
   /**

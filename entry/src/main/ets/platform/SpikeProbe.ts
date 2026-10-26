@@ -58,6 +58,7 @@ export class SpikeProbe {
 
   private static async pdf(ctx: common.UIAbilityContext, lines: SpikeLine[]): Promise<void> {
     let doc: pdfService.PdfDocument | null = null;
+    let page: pdfService.PdfPage | null = null;
     try {
       const path: string = await SpikeProbe.copyRawFile(ctx, 'spike-timetable.pdf');
       doc = new pdfService.PdfDocument();
@@ -74,17 +75,18 @@ export class SpikeProbe {
         return;
       }
 
-      const page: pdfService.PdfPage = doc.getPage(0);
+      const pageObj: pdfService.PdfPage = doc.getPage(0);
+      page = pageObj;
       SpikeProbe.push(
         lines,
         'PDF: 页面尺寸(point)',
         true,
-        `${Math.round(page.getWidth())} x ${Math.round(page.getHeight())}`
+        `${Math.round(pageObj.getWidth())} x ${Math.round(pageObj.getHeight())}`
       );
 
       // 路线 1：纯文本
       try {
-        const text: string = page.getTextContent();
+        const text: string = pageObj.getTextContent();
         const head: string = text.length > 200 ? text.substring(0, 200) + '…' : text;
         SpikeProbe.push(
           lines,
@@ -98,7 +100,7 @@ export class SpikeProbe {
 
       // 路线 2：图形对象里的文本（关键：有没有坐标、含不含页面原有文字）
       try {
-        const objects: pdfService.GraphicsObject[] = page.getGraphicsObjects();
+        const objects: pdfService.GraphicsObject[] = pageObj.getGraphicsObjects();
         let textCount = 0;
         const samples: string[] = [];
         for (const obj of objects) {
@@ -122,7 +124,7 @@ export class SpikeProbe {
 
       // 路线 3：光栅化（若前两条不通，PDF 只能走"渲染成图 + OCR"）
       try {
-        const pixelMap: image.PixelMap = page.getPagePixelMap();
+        const pixelMap: image.PixelMap = pageObj.getPagePixelMap();
         const info: image.ImageInfo = await pixelMap.getImageInfo();
         SpikeProbe.push(
           lines,
@@ -135,10 +137,19 @@ export class SpikeProbe {
         SpikeProbe.push(lines, '路线3 getPagePixelMap()', false, SpikeProbe.errText(e));
       }
 
-      page.release();
+      pageObj.release();
+      page = null;
     } catch (e) {
       SpikeProbe.push(lines, 'PDF: 调用失败（可能模拟器不支持该 Kit）', false, SpikeProbe.errText(e));
     } finally {
+      // page 原来只在成功路径上 release：抛错时 PDF 页对象留在内存里（每按一次泄漏一个）
+      if (page !== null) {
+        try {
+          page.release();
+        } catch (e2) {
+          SpikeProbe.push(lines, 'PDF: page.release() 失败', false, SpikeProbe.errText(e2));
+        }
+      }
       if (doc !== null) {
         try {
           doc.releaseDocument();
@@ -153,9 +164,12 @@ export class SpikeProbe {
 
   private static async ocr(ctx: common.UIAbilityContext, lines: SpikeLine[]): Promise<void> {
     let pixelMap: image.PixelMap | null = null;
+    let source: image.ImageSource | null = null;
+    // 服务是否 init 过：只有 init 过才需要 release（没 init 就 release 会抛错，把真结论盖掉）
+    let serviceTouched = false;
     try {
       const path: string = await SpikeProbe.copyRawFile(ctx, 'spike-schedule.png');
-      const source: image.ImageSource = image.createImageSource(path);
+      source = image.createImageSource(path);
       pixelMap = await source.createPixelMap({
         desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
       });
@@ -166,6 +180,7 @@ export class SpikeProbe {
       let inited = false;
       try {
         inited = await textRecognition.init();
+        serviceTouched = true;
         SpikeProbe.push(lines, 'OCR: init()', inited, String(inited));
       } catch (e) {
         SpikeProbe.push(lines, 'OCR: init() 失败（继续试识别）', false, SpikeProbe.errText(e));
@@ -237,13 +252,32 @@ export class SpikeProbe {
         detail += '；警告：' + parsed.warnings.join(' / ');
       }
       SpikeProbe.push(lines, 'OCR → 作息解析', periods.length >= 8, detail);
-
-      await textRecognition.release();
     } catch (e) {
       SpikeProbe.push(lines, 'OCR: 调用失败（可能模拟器不支持该 Kit）', false, SpikeProbe.errText(e));
     } finally {
+      // 三条资源都必须放 here：原来 `textRecognition.release()` 只在成功路径上调用，
+      // 中途 return / 抛错都会漏；`source` 则一次都没释放（每按一次探测泄漏一个 ImageSource）
+      if (serviceTouched) {
+        try {
+          await textRecognition.release();
+        } catch (e2) {
+          // 释放失败不影响结论，但要留下痕迹
+          SpikeProbe.push(lines, 'OCR: release() 失败', false, SpikeProbe.errText(e2));
+        }
+      }
       if (pixelMap !== null) {
-        pixelMap.release();
+        try {
+          pixelMap.release();
+        } catch (e3) {
+          SpikeProbe.push(lines, 'OCR: pixelMap.release() 失败', false, SpikeProbe.errText(e3));
+        }
+      }
+      if (source !== null) {
+        try {
+          source.release();
+        } catch (e4) {
+          SpikeProbe.push(lines, 'OCR: ImageSource.release() 失败', false, SpikeProbe.errText(e4));
+        }
       }
     }
   }

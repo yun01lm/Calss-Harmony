@@ -493,9 +493,16 @@ struct Index {
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor('#E07A5F')
-        Text(this.weekRangeText() + '  学期设置')
-          .fontSize(10)
-          .fontColor('#B4664C')
+        Row({ space: 2 }) {
+          Text(this.weekRangeText() + '  学期设置')
+            .fontSize(10)
+            .fontColor('#B4664C')
+          // 可点的提示：用一个 9vp 的箭头，而不是靠字符（`›` 在真机上不渲染，见 ACCEPTANCE §6.8）
+          Image($r('app.media.ic_chevron_right'))
+            .width(9)
+            .height(9)
+            .opacity(0.55)
+        }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Center)
@@ -1056,6 +1063,9 @@ struct Index {
       .width('100%')
       .padding({ left: 12, right: 12 })
       .scrollBar(BarState.Off)
+      // 高度上限：只有 3、4 节时列表别把按钮顶到屏幕最底（中间一大片空白），
+      // 节数多的时候仍然占满可用高度并在内部滚动
+      .constraintSize({ maxHeight: '68%' })
 
       Row({ space: 8 }) {
         Button('补一节')

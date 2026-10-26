@@ -87,3 +87,25 @@ test('异常输入：fontScale 为 0/负数时按 1 处理', () => {
   assert.deepEqual(CellLayout.cellLines(64, 0), CellLayout.cellLines(64, 1));
   assert.doesNotThrow(() => CellLayout.cellLines(64, -1));
 });
+
+// ---------------------------------------------------------------- 窄格（撞车时每门只剩 ~22vp）
+
+test('窄格：字号降一档、最多两行、不放教室（否则中文竖成一列）', () => {
+  const normal = CellLayout.cellLines(64, 1);
+  const narrow = CellLayout.cellLines(64, 1, 22);
+
+  assert.equal(narrow.nameFontSize, CellLayout.NARROW_FONT_SIZE);
+  assert.ok(narrow.nameFontSize < normal.nameFontSize, '窄格必须比正常格小一号');
+  assert.ok(narrow.nameLines <= 2, '窄格最多两行，避免竖字');
+  assert.equal(narrow.locationLines, 0, '窄格放不下教室行，宁可不放也不叠字');
+  assert.equal(narrow.clipped, false, '两行一定放得下');
+});
+
+test('宽度够时不走窄格分支（回归：正常格子排版不变）', () => {
+  const byDefault = CellLayout.cellLines(64, 1);
+  const explicit = CellLayout.cellLines(64, 1, 60);
+  assert.deepEqual(explicit, byDefault);
+  // 边界：正好等于阈值时不算窄
+  const atThreshold = CellLayout.cellLines(64, 1, CellLayout.NARROW_WIDTH);
+  assert.deepEqual(atThreshold, byDefault);
+});

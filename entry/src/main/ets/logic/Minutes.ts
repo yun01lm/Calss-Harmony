@@ -19,11 +19,23 @@ export class Minutes {
     if (m === null) {
       return null;
     }
-    const h = Number.parseInt(m[1], 10);
-    const min = Number.parseInt(m[2], 10);
-    if (h < 0 || h > 23 || min < 0 || min > 59) {
+    return Minutes.of(Number.parseInt(m[1], 10), Number.parseInt(m[2], 10));
+  }
+
+  /**
+   * 时/分 → 当天分钟数，越界返回 null。
+   *
+   * 单独抽出来是为了**只有一份范围校验**：`Minutes.parse`（解析 PDF/OCR 里已经成形的
+   * "8:00"）与 `InputNorm.time`（解析用户手输的 "8"、"800"、"8.5"）都需要它。
+   * 各写一份的话迟早出现"手输能过、解析不过"这种只在某一个入口才踩得到的差异。
+   */
+  static of(hour: number, minute: number): number | null {
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
       return null;
     }
-    return h * 60 + min;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+      return null;
+    }
+    return hour * 60 + minute;
   }
 }

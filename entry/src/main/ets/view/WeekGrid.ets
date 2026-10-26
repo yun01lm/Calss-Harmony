@@ -279,7 +279,8 @@ export struct WeekGrid {
   }
 
   private cellLinesAt(index: number): CellLines {
-    return CellLayout.cellLines(this.blockHeightAt(index), this.fontScale);
+    // 带上宽度：撞车时每门课只剩 ~22vp，窄格要换一套排版（否则中文竖成一列）
+    return CellLayout.cellLines(this.blockHeightAt(index), this.fontScale, this.blockWidthAt(index));
   }
 
   private showSubtitleAt(index: number): boolean {
