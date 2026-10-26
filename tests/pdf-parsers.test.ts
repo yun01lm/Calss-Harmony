@@ -376,3 +376,33 @@ test('列表式详情：优先取「教学班组成」，其次「教学班」',
   const b = ParsingUtils.parseListDetail('周数:1-16地点:教三-101教师:张老师教学班:软件2502班');
   assert.equal(b.classGroup, '软件2502班');
 });
+
+// ---------------------------------------------------------------- 静默丢弃改成明说（P3）
+
+test('网格式：只有课名、没有详情行的格子 → 跳过并**报出课名**（不是静默消失）', () => {
+  const runs: PdfTextRun[] = gridHeaders();
+  // 星期二：一个好格子 + 一个只有课名的坏格子
+  runs.push(run('正常课★', 150, 150));
+  runs.push(run('(3-4节)1-16周/教三-101/张老师', 150, 170));
+  runs.push(run('没写时间的课★', 150, 220));
+  // 星期三：另一个坏格子
+  runs.push(run('也没写时间★', 250, 150));
+
+  const r = GridFormatParser.parse(runs);
+  assert.equal(r.courses.length, 1, '坏格子画不出来，不能进课表');
+  assert.equal(r.courses[0].name, '正常课');
+  assert.equal(r.warnings.length, 2, '两个星期各一条警告');
+  assert.ok(r.warnings[0].indexOf('周二') >= 0, r.warnings[0]);
+  assert.ok(r.warnings[0].indexOf('没写时间的课') >= 0, r.warnings[0]);
+  assert.ok(r.warnings[1].indexOf('周三') >= 0, r.warnings[1]);
+  assert.ok(r.warnings[1].indexOf('也没写时间') >= 0, r.warnings[1]);
+});
+
+test('网格式：所有格子都好时不产生"跳过"警告（不许狼来了）', () => {
+  const runs: PdfTextRun[] = gridHeaders();
+  runs.push(run('高等数学（A）★', 150, 150));
+  runs.push(run('(3-4节)1-16周/思源楼-301/张老师', 150, 170));
+  const r = GridFormatParser.parse(runs);
+  assert.equal(r.courses.length, 1);
+  assert.deepEqual(r.warnings, []);
+});

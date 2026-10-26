@@ -44,3 +44,7 @@ Thumbs.db
 
 # 真实课表 PDF（含姓名）——只用于本地验证，绝不入库
 entry/src/main/resources/rawfile/spike-real*.pdf
+
+# 构建日志（`hvigorw ... *> build.log` 留下的；2026-10-26 曾被误提交又删掉）
+/build.log
+/rel.log

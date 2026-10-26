@@ -104,6 +104,7 @@ export class GridFormatParser {
     }
 
     const courses: RawCourse[] = [];
+    const warnings: string[] = [];
     for (let i = 0; i < days.length; i++) {
       const column: PdfTextRun[] = [];
       for (const r of body) {
@@ -114,13 +115,28 @@ export class GridFormatParser {
       }
       // 排序键 = (页, y)：跨页被切断的单元格因此自动接上
       column.sort(compareByPageThenY);
-      for (const c of GridFormatParser.parseColumn(days[i], column)) {
+      const skipped: string[] = [];
+      for (const c of GridFormatParser.parseColumn(days[i], column, skipped)) {
         courses.push(c);
+      }
+      if (skipped.length > 0) {
+        // 以前这类格子是**静默丢掉**的：用户在预览里只看到"少了门课"，
+        // 根本不知道是没认出来还是 PDF 里就没有。宁可多一行提示。
+        warnings.push(
+          '周' + GridFormatParser.dayNameOf(days[i]) + '有 ' + skipped.length +
+            ' 个格子只认出课名、没认出上课时间，已跳过：' + skipped.join('、')
+        );
       }
     }
 
-    const result: ParseResult = { courses, format: ParsingUtils.FORMAT_GRID, warnings: [] };
+    const result: ParseResult = { courses, format: ParsingUtils.FORMAT_GRID, warnings: warnings };
     return result;
+  }
+
+  /** 1..7 → 一..日（提示文案用） */
+  private static dayNameOf(day: number): string {
+    const names: string[] = ['一', '二', '三', '四', '五', '六', '日'];
+    return day >= 1 && day <= 7 ? names[day - 1] : String(day);
   }
 
   /**
@@ -129,7 +145,7 @@ export class GridFormatParser {
    * - 匹配 "(N-M节)…" 的行 → 该门课的详情开始
    * - 其余行 → 详情已在收集则并入详情（折行续行），否则并入课程名（名字折成两行）
    */
-  private static parseColumn(day: number, lines: PdfTextRun[]): RawCourse[] {
+  private static parseColumn(day: number, lines: PdfTextRun[], skipped: string[]): RawCourse[] {
     const out: RawCourse[] = [];
     let name = '';
     let detail: string | null = null;
@@ -161,6 +177,12 @@ export class GridFormatParser {
           };
           out.push(course);
         }
+      } else if (name.trim().length > 0) {
+        // 有课名、但整格都没出现 "第N-M节…" 那一行 → 画不出来。以前直接丢，
+        // 现在把课名抛给调用方汇总成一条警告。
+        const cleanedName = ParsingUtils.cleanName(name);
+        const shown: string = cleanedName[0].length > 0 ? cleanedName[0] : name.trim();
+        skipped.push(shown);
       }
       name = '';
       detail = null;

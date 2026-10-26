@@ -301,3 +301,37 @@ test('rawLines：保留原文行，便于用户对照纠错', () => {
   assert.ok(r.rawLines.length > 20);
   assert.ok(r.rawLines.some((l) => l.indexOf('全校作息时间调整方案') >= 0));
 });
+
+// ---------------------------------------------------------------- 版式变体（P3.3）
+
+test('一行两节（两列表格被 OCR 拼成一行）→ 两节都认出来', () => {
+  const r = TimetableTextParser.parse(
+    TimetableTextParser.linesFromText('1  8:00-8:45   2  8:50-9:35')
+  );
+  assert.deepEqual(r.periods.map((p) => p.periodIndex), [1, 2]);
+  assert.equal(r.periods[1].startMinute, 8 * 60 + 50);
+});
+
+test('节次号前后的分组字、"第N节"、波浪线都容忍', () => {
+  const a = TimetableTextParser.parse(TimetableTextParser.linesFromText('上午 1 8:00-8:45'));
+  assert.equal(a.periods.length, 1);
+  assert.equal(a.periods[0].startMinute, 8 * 60);
+
+  const b = TimetableTextParser.parse(TimetableTextParser.linesFromText('1\t8:00-8:45\t上午'));
+  assert.equal(b.periods.length, 1);
+  assert.equal(b.periods[0].startMinute, 8 * 60);
+
+  const c = TimetableTextParser.parse(TimetableTextParser.linesFromText('第1节 8:00-8:45'));
+  assert.equal(c.periods.length, 1);
+  assert.equal(c.periods[0].startMinute, 8 * 60);
+
+  const d = TimetableTextParser.parse(TimetableTextParser.linesFromText('1  8:00~8:45'));
+  assert.equal(d.periods.length, 1);
+  assert.equal(d.periods[0].endMinute, 8 * 60 + 45);
+});
+
+test('只认出一两节时一定带"请仔细核对"警告（别让用户以为识别完整）', () => {
+  const r = TimetableTextParser.parse(TimetableTextParser.linesFromText('1 8:00-8:45'));
+  assert.equal(r.periods.length, 1);
+  assert.ok(r.warnings.some((w) => w.indexOf('仔细核对') >= 0), JSON.stringify(r.warnings));
+});
