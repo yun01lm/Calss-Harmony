@@ -143,9 +143,22 @@ test('启动规则：勾了「总是打开主课表」且确实有主课表 → 
 test('启动规则：记住的课表已被删 → 回退主课表，而不是报错', async () => {
   const { store, runner } = makeStore();
   await store.ensureCurrentTimetable(NOW);
-  await store.switchTo(999);
+  // 直接写偏好来模拟"库里记着一个已经不存在的 id"：
+  // 正常路径下 switchTo() 会拒绝切到不存在的课表（见下一个用例），
+  // 而偏好里残留坏 id 只可能来自旧版本或异常退出 —— 那才是这条规则要兜的情况。
+  await runner.exec('INSERT OR REPLACE INTO preferences (key, value) VALUES (?, ?)', [
+    PREF_CURRENT_TIMETABLE,
+    '999',
+  ]);
   const restarted = new ScheduleStore(runner);
   assert.equal(await restarted.ensureCurrentTimetable(NOW), 1);
+});
+
+test('switchTo 拒绝切到不存在的课表，且不改当前指针', async () => {
+  const { store } = makeStore();
+  const first = await store.ensureCurrentTimetable(NOW);
+  await assert.rejects(() => store.switchTo(999), /已经不在/);
+  assert.equal(store.currentId, first);
 });
 
 test('switchTo 会写下偏好，另一个实例能读回同一张', async () => {

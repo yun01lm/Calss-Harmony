@@ -77,4 +77,19 @@ export interface SqlRunner {
    * 这里的实现约定是"插入 + 取 id 在同一个事务里完成"，两边都成立。
    */
   insertAndGetId(sql: string, args?: SqlArg[]): Promise<number>;
+
+  /**
+   * 在**一个事务**里跑一组读写，回调拿到的是"同一个事务里的 runner"。
+   *
+   * 为什么需要它：`snapshot()` 要读课表/作息/课程/时段/安排**五张表**，五条独立查询
+   * 之间一旦有写入插进来（导入正在合并、迁移正在补列），UI 就可能拿到
+   * "课程已是新的、时段还是旧的"这种自相矛盾的快照 —— 详情卡显示错课就是这么来的。
+   *
+   * 为什么回调而不是 `begin/commit` 两个方法：后者要求调用方自己保证
+   * "begin 和 commit 落在同一条连接上"，而 Rdb 有连接池，这条保证**用类型表达不出来**；
+   * 交给实现方在一个事务里跑完，两边（真库/内存库）语义一致。
+   *
+   * 回调抛错 → 整批回滚，错误原样抛给调用方。
+   */
+  transaction(run: (tx: SqlRunner) => Promise<void>): Promise<void>;
 }

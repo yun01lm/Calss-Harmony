@@ -16,13 +16,14 @@
  * 5. 删课表时**显式删**课程/日程/作息/安排 —— 不依赖 SQLite 外键级联（见下方 deleteTimetable 注释）。
  */
 import { PREF_CURRENT_TIMETABLE, PREF_OPEN_PRIMARY_ON_LAUNCH, defaultSlots, type SlotSeed } from './schema.ts';
-import { seedSlotRows } from './migrations.ts';
 import { pickStartupTimetable, type TimetableChoice } from './startupRule.ts';
 import { courseKeyOf, mergeCourseItems } from './CourseMerge.ts';
 import { WeekCalculator } from '../logic/WeekCalculator.ts';
-import { type SqlArg, type SqlRow, type SqlRunner, type SqlStatement } from './SqlRunner.ts';
+import { type SqlRow, type SqlRunner, type SqlStatement } from './SqlRunner.ts';
 import {
+  assertPeriodRange,
   assertSafeMask,
+  assertScheduleRange,
   clampTotalWeeks,
   type Course,
   type CourseSchedule,
@@ -90,8 +91,18 @@ export class ScheduleStore {
     return this.current;
   }
 
-  /** 切到某张课表，并记住它（下次启动默认打开） */
+  /**
+   * 切到某张课表，并记住它（下次启动默认打开）。
+   *
+   * 目标课表必须存在：不存在也照切的话，`current` 会指向一张没有的课表，
+   * 接下来所有查询都返回空 —— 界面上就是"课表突然空了"，而且**重启也恢复不了**
+   * （偏好里记的就是那个坏 id）。宁可当场报错，让用户停在原课表上。
+   */
   async switchTo(id: number): Promise<void> {
+    const exists: SqlRow[] = await this.db.query('SELECT id FROM timetables WHERE id = ?', [id]);
+    if (exists.length === 0) {
+      throw new Error('要切换的课表已经不在了（可能刚被删除）');
+    }
     this.current = id;
     await this.setPref(PREF_CURRENT_TIMETABLE, String(id));
   }
@@ -122,16 +133,37 @@ export class ScheduleStore {
 
   // ---------------------------------------------------------------- 快照
 
-  /** 一次读齐当前课表（切表时整体换掉，UI 只订阅这一个结果） */
+  /**
+   * 一次读齐当前课表（切表时整体换掉，UI 只订阅这一个结果）。
+   *
+   * **五张表在同一个读事务里读**：否则"导入正在写"与"UI 正在读"交错时，
+   * 可能拿到"课程已更新、时段还是旧的"的快照 —— 详情卡会显示 A 的课名配 B 的老师。
+   * 这类错在单次点击里很难复现，但一旦出现，用户看到的就是**错的数据**。
+   */
   async snapshot(): Promise<Snapshot> {
     const id: number = await this.requireCurrent();
-    const timetable: Timetable | null = await this.timetableById(id);
-    const slots: TimeSlot[] = await this.readSlotsOf(id);
-    const courses: Course[] = await this.readCoursesOf(id);
-    const schedules: CourseSchedule[] = await this.readSchedulesOf(id);
-    const events: CustomEvent[] = await this.readEventsOf(id);
+    let snap: Snapshot | null = null;
+    await this.db.transaction(async (tx: SqlRunner): Promise<void> => {
+      snap = await ScheduleStore.readSnapshotWith(tx, id);
+    });
+    if (snap === null) {
+      throw new Error('读取课表失败：事务没有返回数据');
+    }
+    return snap;
+  }
+
+  /** 用给定的 runner（可能是事务里的）读一份完整快照 */
+  private static async readSnapshotWith(db: SqlRunner, id: number): Promise<Snapshot> {
+    const timetableRows: SqlRow[] = await db.query(
+      'SELECT id, name, startDateEpochDay, totalWeeks, isPrimary, createdAt FROM timetables WHERE id = ?',
+      [id]
+    );
+    const slots: TimeSlot[] = await ScheduleStore.readSlotsWith(db, id);
+    const courses: Course[] = await ScheduleStore.readCoursesWith(db, id);
+    const schedules: CourseSchedule[] = await ScheduleStore.readSchedulesWith(db, id);
+    const events: CustomEvent[] = await ScheduleStore.readEventsWith(db, id);
     const snap: Snapshot = {
-      timetable: timetable,
+      timetable: timetableRows.length === 0 ? null : toTimetable(timetableRows[0]),
       slots: slots,
       courses: courses,
       schedules: schedules,
@@ -141,7 +173,11 @@ export class ScheduleStore {
   }
 
   async readSlotsOf(timetableId: number): Promise<TimeSlot[]> {
-    const rows: SqlRow[] = await this.db.query(
+    return ScheduleStore.readSlotsWith(this.db, timetableId);
+  }
+
+  private static async readSlotsWith(db: SqlRunner, timetableId: number): Promise<TimeSlot[]> {
+    const rows: SqlRow[] = await db.query(
       'SELECT id, timetableId, periodIndex, label, startMinute, endMinute FROM time_slots ' +
         'WHERE timetableId = ? ORDER BY periodIndex',
       [timetableId]
@@ -154,7 +190,11 @@ export class ScheduleStore {
   }
 
   async readCoursesOf(timetableId: number): Promise<Course[]> {
-    const rows: SqlRow[] = await this.db.query(
+    return ScheduleStore.readCoursesWith(this.db, timetableId);
+  }
+
+  private static async readCoursesWith(db: SqlRunner, timetableId: number): Promise<Course[]> {
+    const rows: SqlRow[] = await db.query(
       'SELECT id, timetableId, name, teacher, location, color, category, note FROM courses ' +
         'WHERE timetableId = ? ORDER BY id',
       [timetableId]
@@ -167,7 +207,11 @@ export class ScheduleStore {
   }
 
   async readSchedulesOf(timetableId: number): Promise<CourseSchedule[]> {
-    const rows: SqlRow[] = await this.db.query(
+    return ScheduleStore.readSchedulesWith(this.db, timetableId);
+  }
+
+  private static async readSchedulesWith(db: SqlRunner, timetableId: number): Promise<CourseSchedule[]> {
+    const rows: SqlRow[] = await db.query(
       'SELECT id, courseId, dayOfWeek, startPeriod, endPeriod, weekMask, location, classGroup FROM course_schedules ' +
         'WHERE courseId IN (SELECT id FROM courses WHERE timetableId = ?) ORDER BY courseId, dayOfWeek, startPeriod',
       [timetableId]
@@ -180,7 +224,11 @@ export class ScheduleStore {
   }
 
   async readEventsOf(timetableId: number): Promise<CustomEvent[]> {
-    const rows: SqlRow[] = await this.db.query(
+    return ScheduleStore.readEventsWith(this.db, timetableId);
+  }
+
+  private static async readEventsWith(db: SqlRunner, timetableId: number): Promise<CustomEvent[]> {
+    const rows: SqlRow[] = await db.query(
       'SELECT id, timetableId, title, dayOfWeek, startPeriod, endPeriod, startMinute, endMinute, ' +
         'weekMask, color, note FROM custom_events WHERE timetableId = ? ORDER BY id, dayOfWeek',
       [timetableId]
@@ -332,6 +380,8 @@ export class ScheduleStore {
     // 1. 校验（不碰库）
     for (const s of schedules) {
       assertSafeMask(s.weekMask);
+      // 最后一道闸：周视图按 1..7 取列、按 1..30 取行，越界的数据写进去就是"永远看不见"
+      assertScheduleRange(s.dayOfWeek, s.startPeriod, s.endPeriod);
     }
 
     if (course.id === 0) {
@@ -489,6 +539,14 @@ export class ScheduleStore {
 
   async saveEvent(event: CustomEvent): Promise<number> {
     const timetableId: number = await this.requireCurrent();
+    assertSafeMask(event.weekMask);
+    if (event.dayOfWeek < 1 || event.dayOfWeek > 7) {
+      throw new Error('星期不合法（' + event.dayOfWeek + '）：必须是 1（周一）到 7（周日）');
+    }
+    // 安排允许"只有钟点、没有节次"（老数据），有节次时必须成对且合法
+    if (event.startPeriod !== null && event.endPeriod !== null) {
+      assertPeriodRange(event.startPeriod, event.endPeriod);
+    }
     if (event.id === 0) {
       const newId: number = await this.db.insertAndGetId(
         'INSERT INTO custom_events (timetableId, title, dayOfWeek, startPeriod, endPeriod, ' +
@@ -507,6 +565,12 @@ export class ScheduleStore {
         ]
       );
       return newId;
+    }
+    // 目标行必须存在：外键在设备上关着，UPDATE 0 行不报错 ——
+    // 用户会以为"保存成功了"，重进课表才发现改动全没（`saveCourse` 踩过同一个坑）
+    const exists: SqlRow[] = await this.db.query('SELECT id FROM custom_events WHERE id = ?', [event.id]);
+    if (exists.length === 0) {
+      throw new Error('这条安排已经不存在了（可能刚被删除），请重新打开课表');
     }
     await this.db.exec(
       'UPDATE custom_events SET timetableId = ?, title = ?, dayOfWeek = ?, startPeriod = ?, ' +
@@ -559,12 +623,18 @@ export class ScheduleStore {
 
   async saveSlot(slot: TimeSlot): Promise<number> {
     const timetableId: number = await this.requireCurrent();
+    // 节次号就是网格的行号：越界会让周视图画出 999 行，先挡下来
+    assertPeriodRange(slot.periodIndex, slot.periodIndex);
     if (slot.id === 0) {
       return this.db.insertAndGetId(
         'INSERT INTO time_slots (timetableId, periodIndex, label, startMinute, endMinute) ' +
           'VALUES (?, ?, ?, ?, ?)',
         [timetableId, slot.periodIndex, slot.label, slot.startMinute, slot.endMinute]
       );
+    }
+    const exists: SqlRow[] = await this.db.query('SELECT id FROM time_slots WHERE id = ?', [slot.id]);
+    if (exists.length === 0) {
+      throw new Error('这一节已经不存在了（可能刚被删除），请重新打开作息页');
     }
     await this.db.exec(
       'UPDATE time_slots SET timetableId = ?, periodIndex = ?, label = ?, startMinute = ?, ' +
@@ -581,6 +651,10 @@ export class ScheduleStore {
   // ---------------------------------------------------------------- 内部
 
   private async replaceSlotsOf(timetableId: number, slots: TimeSlot[]): Promise<void> {
+    // 整表替换前先校验：一张越界的作息表进去，周视图会画成"999 行"
+    for (const s of slots) {
+      assertPeriodRange(s.periodIndex, s.periodIndex);
+    }
     const steps: SqlStatement[] = [
       { sql: 'DELETE FROM time_slots WHERE timetableId = ?', params: [timetableId] },
     ];
@@ -595,6 +669,16 @@ export class ScheduleStore {
     await this.db.runSteps(steps);
   }
 
+  /**
+   * 新建课表：**课表行 + 它的作息在同一次 `runSteps` 里写完**。
+   *
+   * 原来分两步（`insertAndGetId` 一个事务、作息另一个事务），中途失败会留下一张
+   * **没有作息的课表** —— 打开它时 12 个格子一行都画不出来，用户只会觉得"App 坏了"。
+   *
+   * 拿自增 id 的办法与 `appendInsertCourse` 相同：同一事务里，紧接着插入的课表就是
+   * `(SELECT MAX(id) FROM timetables)`，既不用 `last_insert_rowid()`（连接池下不可靠），
+   * 也不用给自增主键硬塞值（会踩 AUTOINCREMENT 序列）。
+   */
   private async createTimetableInternal(
     name: string,
     startEpochDay: number,
@@ -604,36 +688,46 @@ export class ScheduleStore {
   ): Promise<number> {
     // 第一张课表自动成为主课表，避免"主课表"悬空
     const count: number = await this.db.scalarInt('SELECT COUNT(*) FROM timetables');
-    const id: number = await this.db.insertAndGetId(
-      'INSERT INTO timetables (name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
-        'VALUES (?, ?, ?, ?, ?)',
-      [name, startEpochDay, totalWeeks, count === 0 ? 1 : 0, nowMillis]
-    );
+    const idRef: string = '(SELECT MAX(id) FROM timetables)';
+    const steps: SqlStatement[] = [
+      {
+        sql:
+          'INSERT INTO timetables (name, startDateEpochDay, totalWeeks, isPrimary, createdAt) ' +
+          'VALUES (?, ?, ?, ?, ?)',
+        params: [name, startEpochDay, totalWeeks, count === 0 ? 1 : 0, nowMillis],
+      },
+    ];
 
-    const steps: SqlStatement[] = [];
+    let seeded: SlotSeed[];
     if (copySlotsFrom !== null) {
       const source: TimeSlot[] = await this.readSlotsOf(copySlotsFrom);
-      steps.push({ sql: 'DELETE FROM time_slots WHERE timetableId = ?', params: [id] });
+      seeded = [];
       for (const s of source) {
-        steps.push({
-          sql:
-            'INSERT INTO time_slots (timetableId, periodIndex, label, startMinute, endMinute) ' +
-            'VALUES (?, ?, ?, ?, ?)',
-          params: [id, s.periodIndex, s.label, s.startMinute, s.endMinute],
+        seeded.push({
+          periodIndex: s.periodIndex,
+          label: s.label,
+          startMinute: s.startMinute,
+          endMinute: s.endMinute,
         });
       }
     } else {
-      for (const step of seedSlotRows(id)) {
-        const params: SqlArg[] = [];
-        if (step.params !== undefined) {
-          for (const p of step.params) {
-            params.push(p);
-          }
-        }
-        steps.push({ sql: step.sql, params: params });
-      }
+      seeded = defaultSlots();
     }
+    for (const s of seeded) {
+      steps.push({
+        sql:
+          'INSERT INTO time_slots (timetableId, periodIndex, label, startMinute, endMinute) ' +
+          'VALUES (' + idRef + ', ?, ?, ?, ?)',
+        params: [s.periodIndex, s.label, s.startMinute, s.endMinute],
+      });
+    }
+
     await this.db.runSteps(steps);
+    // 事务已提交：此刻库里的 MAX(id) 就是刚插入的那张（单进程、单写者）
+    const id: number = await this.db.scalarInt('SELECT MAX(id) FROM timetables');
+    if (id <= 0) {
+      throw new Error('新建课表失败：写完之后读不到 id');
+    }
     return id;
   }
 

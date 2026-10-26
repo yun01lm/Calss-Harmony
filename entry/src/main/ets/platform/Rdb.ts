@@ -355,6 +355,34 @@ export class Rdb implements SqlRunner {
     }
   }
 
+  /**
+   * 在**一个事务**里跑一组读写，回调拿到的是"绑在这个事务上的 runner"。
+   *
+   * 关键点：不能用 `BEGIN` / `COMMIT` 两条独立语句 —— RDB 内部有连接池，
+   * 那样 begin 和 commit 可能落在不同连接上（`runSteps` 的注释里也写了同一件事）。
+   * 这里用 `store.createTransaction()` 拿到一个**绑定连接**的事务对象，
+   * 再把它包成 SqlRunner 交给回调，事务内所有 query/exec 都走它。
+   *
+   * 不支持嵌套：回调里再调 `transaction()` 会直接报错（当前没有这种调用）。
+   */
+  async transaction(run: (tx: SqlRunner) => Promise<void>): Promise<void> {
+    const tx: relationalStore.Transaction = await this.store.createTransaction();
+    const runner: RdbTxRunner = new RdbTxRunner(tx);
+    try {
+      await run(runner);
+      await tx.commit();
+    } catch (e) {
+      const err = e as Error;
+      try {
+        await tx.rollback();
+      } catch (e2) {
+        const err2 = e2 as BusinessError;
+        console.error('[Rdb] 回滚同样失败：' + err2.code + ' ' + err2.message);
+      }
+      throw new Error('事务失败，已回滚：' + err.message);
+    }
+  }
+
   /** `sqlite_master` 里属于本应用的现有表 */
   private async existingTables(): Promise<string[]> {
     const rows: RdbRow[] = await this.query("SELECT name FROM sqlite_master WHERE type = 'table'");
@@ -421,9 +449,74 @@ export class Rdb implements SqlRunner {
   }
 }
 
+/**
+ * 绑定在某个事务上的 SqlRunner（`Rdb.transaction` 内部用）。
+ *
+ * 只实现事务内真正需要的四个方法：`query` / `exec` / `scalarInt` / `insertAndGetId`。
+ * `transaction()` 自己再调会直接抛错 —— 嵌套事务在这套 API 里没有语义，
+ * 与其猜"用保存点还是并入外层"，不如明确拒绝。
+ */
+class RdbTxRunner implements SqlRunner {
+  private readonly tx: relationalStore.Transaction;
+
+  constructor(tx: relationalStore.Transaction) {
+    this.tx = tx;
+  }
+
+  async query(sql: string, args: SqlArg[] = []): Promise<SqlRow[]> {
+    const rs: relationalStore.ResultSet = await this.tx.querySql(sql, toValues(args));
+    const names: string[] = rs.getColumnNames();
+    const out: RdbRow[] = [];
+    try {
+      while (rs.goToNextRow()) {
+        const cells: Map<string, relationalStore.ValueType> =
+          new Map<string, relationalStore.ValueType>();
+        for (let i = 0; i < names.length; i++) {
+          cells.set(names[i], rs.isColumnNull(i) ? null : rs.getValue(i));
+        }
+        out.push(new RdbRow(names, cells));
+      }
+    } finally {
+      rs.close();
+    }
+    return out;
+  }
+
+  async exec(sql: string, args: SqlArg[] = []): Promise<void> {
+    await this.tx.execute(sql, toValues(args));
+  }
+
+  async scalarInt(sql: string, args: SqlArg[] = []): Promise<number> {
+    const rows: SqlRow[] = await this.query(sql, args);
+    if (rows.length === 0) {
+      return 0;
+    }
+    const names: string[] = rows[0].columnNames();
+    if (names.length === 0) {
+      return 0;
+    }
+    return rows[0].int(names[0]);
+  }
+
+  async insertAndGetId(sql: string, args: SqlArg[] = []): Promise<number> {
+    await this.tx.execute(sql, toValues(args));
+    const rows: SqlRow[] = await this.query('SELECT last_insert_rowid() AS id');
+    return rows.length === 0 ? 0 : rows[0].int('id');
+  }
+
+  async runSteps(steps: SqlStatement[]): Promise<void> {
+    for (const step of steps) {
+      await this.exec(step.sql, step.params === undefined ? [] : step.params);
+    }
+  }
+
+  async transaction(run: (tx: SqlRunner) => Promise<void>): Promise<void> {
+    throw new Error('不支持嵌套事务：请在同一个 transaction() 回调里完成全部读写');
+  }
+}
+
 /** SqlArg → relationalStore 的绑定参数（SqlArg 是它的子集，这里显式转一次避免类型歧义） */
-function toValues(args: SqlArg[]): Array<relationalStore.ValueType> {
-  const out: Array<relationalStore.ValueType> = [];
+function toValues(args: SqlArg[]): Array<relationalStore.ValueType> {  const out: Array<relationalStore.ValueType> = [];
   for (const a of args) {
     out.push(a);
   }

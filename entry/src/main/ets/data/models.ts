@@ -153,7 +153,44 @@ export function assertSafeMask(mask: number): number {
   return mask;
 }
 
-/** 新建课表时的默认学期周数（与 Android `createTimetable` 一致） */export const MIN_TOTAL_WEEKS = 1;
+/**
+ * 节次号的上限。
+ *
+ * 与 `logic/SlotDraft.MAX_PERIOD` 同一个数、同一个理由：**周视图的行数 = 最大节次号**，
+ * 一个 999 会把网格撑成 999 行。放在 data 层是因为这里是最后一道闸 ——
+ * 表单和解析器都夹过范围，但"都夹过"不等于"库里不会出现"。
+ */
+export const MAX_PERIOD_INDEX = 30;
+
+/**
+ * 校验一次上课时间（星期 + 起止节次）。
+ *
+ * 为什么放在写库边界还要再查一遍：`logic/` 的表单会夹范围、解析器也会夹，
+ * 但那是**入口各自**的保证。只要将来多一个写入口（导入、迁移修复、调试工具），
+ * 少夹一次就会把 `dayOfWeek = 0` 这种数据写进库 —— 之后周视图按 1..7 取列，
+ * 这门课直接**永远不显示**，而且没有任何报错。
+ */
+export function assertScheduleRange(dayOfWeek: number, startPeriod: number, endPeriod: number): void {
+  if (!Number.isInteger(dayOfWeek) || dayOfWeek < 1 || dayOfWeek > 7) {
+    throw new Error('星期不合法（' + dayOfWeek + '）：必须是 1（周一）到 7（周日）');
+  }
+  assertPeriodRange(startPeriod, endPeriod);
+}
+
+/** 只校验节次：自定义安排、作息都用它（安排允许只有钟点、没有节次，调用方自行跳过） */
+export function assertPeriodRange(startPeriod: number, endPeriod: number): void {
+  if (!Number.isInteger(startPeriod) || startPeriod < 1 || startPeriod > MAX_PERIOD_INDEX) {
+    throw new Error('起始节次不合法（' + startPeriod + '）：必须是 1 到 ' + MAX_PERIOD_INDEX);
+  }
+  if (!Number.isInteger(endPeriod) || endPeriod < startPeriod || endPeriod > MAX_PERIOD_INDEX) {
+    throw new Error(
+      '结束节次不合法（' + endPeriod + '）：必须不小于起始节次、且不超过 ' + MAX_PERIOD_INDEX
+    );
+  }
+}
+
+/** 新建课表时的默认学期周数（与 Android `createTimetable` 一致） */
+export const MIN_TOTAL_WEEKS = 1;
 export const MAX_TOTAL_WEEKS = 30;
 
 /** 课表名 / 周数规范化：空白名保留原名，周数夹到 1..30 */

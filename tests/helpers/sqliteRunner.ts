@@ -174,4 +174,23 @@ export class SqliteRunner implements SqlRunner {
       throw e;
     }
   }
+
+  /**
+   * 一个事务里跑一组读写。
+   *
+   * 用 SAVEPOINT 而不是 BEGIN：`runSteps()` 自己也会 BEGIN，而测试里存在
+   * "事务里再调 store 方法"的嵌套场景，裸 `BEGIN` 会直接报
+   * `cannot start a transaction within a transaction`。
+   */
+  async transaction(run: (tx: SqlRunner) => Promise<void>): Promise<void> {
+    this.db.exec('SAVEPOINT dsh_tx');
+    try {
+      await run(this);
+      this.db.exec('RELEASE dsh_tx');
+    } catch (e) {
+      this.db.exec('ROLLBACK TO dsh_tx');
+      this.db.exec('RELEASE dsh_tx');
+      throw e;
+    }
+  }
 }
