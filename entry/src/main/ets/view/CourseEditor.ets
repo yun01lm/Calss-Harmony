@@ -216,7 +216,7 @@ export struct CourseEditor {
           })
         Blank()
         if (this.rows.length > 1) {
-          Text('×')
+          Text('删')
             .fontSize(16)
             .fontColor('#B3A79E')
             .width(24)

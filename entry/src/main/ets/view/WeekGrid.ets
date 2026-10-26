@@ -172,7 +172,7 @@ export struct WeekGrid {
           .width('100%')
           .textAlign(TextAlign.Start)
         if (this.showSubtitleAt(index)) {
-          Text((item.conflicts.length > 0 ? '⚠ ' : '') + item.subtitle)
+          Text((item.conflicts.length > 0 ? '! ' : '') + item.subtitle)
             .fontSize(9)
             .lineHeight(11)
             .fontColor(item.conflicts.length > 0 ? '#C62828' : '#7A6E66')
@@ -181,7 +181,7 @@ export struct WeekGrid {
             .width('100%')
             .textAlign(TextAlign.Start)
         } else if (item.conflicts.length > 0) {
-          Text('⚠')
+          Text('!')
             .fontSize(9)
             .fontColor('#C62828')
         }

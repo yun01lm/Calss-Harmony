@@ -464,23 +464,28 @@ struct Index {
   @Builder
   weekBar() {
     Row({ space: 6 }) {
-      Button('‹')
-        .width(36)
-        .height(36)
-        .fontSize(20)
-        .backgroundColor('#FFFFFF')
-        .fontColor(this.selectedWeek > 1 ? '#3B3430' : '#D8CEC6')
-        .enabled(this.selectedWeek > 1)
-        .onClick(() => {
-          this.goToWeek(this.selectedWeek - 1);
-        })
+      Button() {
+        // 矢量图，不用 `Button('‹')`：真机上 U+2039 这个字符**不渲染**，
+        // 结果是一个什么都没有的白圆圈（模拟器上却正常，字体回退不同）
+        Image($r('app.media.ic_chevron_left'))
+          .width(18)
+          .height(18)
+          .opacity(this.selectedWeek > 1 ? 1 : 0.3)
+      }
+      .width(36)
+      .height(36)
+      .backgroundColor('#FFFFFF')
+      .enabled(this.selectedWeek > 1)
+      .onClick(() => {
+        this.goToWeek(this.selectedWeek - 1);
+      })
 
       Column({ space: 1 }) {
         Text(`第 ${this.selectedWeek} 周`)
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor('#E07A5F')
-        Text(this.weekRangeText() + '  学期设置›')
+        Text(this.weekRangeText() + '  学期设置')
           .fontSize(10)
           .fontColor('#B4664C')
       }
@@ -490,16 +495,19 @@ struct Index {
         this.openSemester();
       })
 
-      Button('›')
-        .width(36)
-        .height(36)
-        .fontSize(20)
-        .backgroundColor('#FFFFFF')
-        .fontColor(this.selectedWeek < this.totalWeeks ? '#3B3430' : '#D8CEC6')
-        .enabled(this.selectedWeek < this.totalWeeks)
-        .onClick(() => {
-          this.goToWeek(this.selectedWeek + 1);
-        })
+      Button() {
+        Image($r('app.media.ic_chevron_right'))
+          .width(18)
+          .height(18)
+          .opacity(this.selectedWeek < this.totalWeeks ? 1 : 0.3)
+      }
+      .width(36)
+      .height(36)
+      .backgroundColor('#FFFFFF')
+      .enabled(this.selectedWeek < this.totalWeeks)
+      .onClick(() => {
+        this.goToWeek(this.selectedWeek + 1);
+      })
     }
     .width('100%')
     .padding({ left: 12, right: 12, bottom: 4 })
@@ -2697,7 +2705,7 @@ struct Index {
       const outcome: OcrOutcome = await Ocr.readLines(ctx as common.UIAbilityContext, uri);
       this.finishSlotParse(
         outcome.lines,
-        '图片 ' + outcome.debug.width + '×' + outcome.debug.height +
+        '图片 ' + outcome.debug.width + 'x' + outcome.debug.height +
           '、方向 ' + ExifOrientation.describe(outcome.debug.orientation)
       );
     } catch (e) {
@@ -2746,7 +2754,7 @@ struct Index {
       const outcome: OcrOutcome = await Ocr.readLines(ability, path);
       this.finishSlotParse(
         outcome.lines,
-        '图片 ' + outcome.debug.width + '×' + outcome.debug.height +
+        '图片 ' + outcome.debug.width + 'x' + outcome.debug.height +
           '、方向 ' + ExifOrientation.describe(outcome.debug.orientation)
       );
     } catch (e) {
@@ -3394,7 +3402,7 @@ struct Index {
       '周次：' + this.weekMaskTextOf(item),
     ];
     if (item.conflicts.length > 0) {
-      this.detailLines.push('⚠ 与《' + item.conflicts.join('》《') + '》时间重叠');
+      this.detailLines.push('! 与《' + item.conflicts.join('》《') + '》时间重叠');
     }
   }
 
@@ -3744,7 +3752,7 @@ struct Index {
       lines.push('备注：' + (event.note.length === 0 ? '（无）' : event.note));
     }
     if (item.conflicts.length > 0) {
-      lines.push('⚠ 与《' + item.conflicts.join('》《') + '》时间重叠');
+      lines.push('! 与《' + item.conflicts.join('》《') + '》时间重叠');
     }
     return lines;
   }
