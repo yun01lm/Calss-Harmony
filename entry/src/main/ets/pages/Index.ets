@@ -10,6 +10,7 @@ import {
   GridFormatParser,
   GridFromOcr,
   InputNorm,
+  JwxtTableParser,
   ListFormatParser,
   Minutes,
   PdfRunText,
@@ -26,12 +27,15 @@ import {
   type DraftRow,
   type EventDraftResult,
   type EventLike,
+  type JwxtSlot,
+  type JwxtParseResult,
   OcrLine,
   type ParseResult,
   type PdfExtractResult,
   type RecognizedPeriod,
   type ScheduleLike,
   type SlotRow,
+
   type TimetableParseResult,
   type WeekItem,
 } from '../logic';
@@ -40,6 +44,7 @@ import { MigrationProbe, ProbeLine } from '../platform/MigrationProbe';
 import { SpikeLine, SpikeProbe } from '../platform/SpikeProbe';
 import { PdfJs } from '../platform/PdfJs';
 import { PdfFile, PickedPdf } from '../platform/PdfFile';
+import { PickedTable, TableFile } from '../platform/TableFile';
 import { Ocr, type OcrOutcome } from '../platform/Ocr';
 import { ScheduleStore } from '../data/ScheduleStore';
 import { mergeCourseItems, type MergeOutcome } from '../data/CourseMerge';
@@ -190,6 +195,11 @@ struct Index {
   /** 导入正在进行（含文件选择器那一小段），用来挡住连点导致的并发解析 */
   private importStarting: boolean = false;
   private importCourses: CourseWithSchedules[] = [];
+  /**
+   * 「教务系统表格」里解析出来的作息：表格导出的文件往往同时带作息时间表，
+   * 不自动写入、由用户在预览里点一下再写（写作息会整表替换，属于破坏性操作）。
+   */
+  @State importSlots: JwxtSlot[] = [];
 
   // ---------------- 二级页面（作息 / 课表）
   /** 'home' | 'slots' | 'slotsimport' | 'timetables' —— 用状态切屏而不是路由：页面少，省掉一层导航栈 */
@@ -761,6 +771,15 @@ struct Index {
         .onClick(() => {
           this.importChoiceOpen = false;
           this.startImportImage();
+        })
+      Button('从教务系统表格（.xls）')
+        .fontSize(14)
+        .height(42)
+        .width('100%')
+        .backgroundColor('#7FA98B')
+        .onClick(() => {
+          this.importChoiceOpen = false;
+          this.startImportTable();
         })
     }
     .width('100%')
@@ -1620,6 +1639,24 @@ struct Index {
             .width('100%')
         }
 
+        // 表格里通常还带着作息时间表：不自动写（整表替换），给一个明确的按钮
+        if (this.importSlots.length > 0) {
+          Row({ space: 8 }) {
+            Text('表格里还有 ' + this.importSlots.length + ' 节作息')
+              .fontSize(11)
+              .fontColor('#7A6E66')
+              .layoutWeight(1)
+            Button('一并导入作息')
+              .fontSize(11)
+              .height(28)
+              .backgroundColor('#7FA98B')
+              .onClick(() => {
+                this.applyImportSlots();
+              })
+          }
+          .width('100%')
+        }
+
         Row({ space: 8 }) {
           Button('覆盖当前课表')
             .fontSize(11)
@@ -1756,6 +1793,16 @@ struct Index {
             .enabled(!this.importStarting && !this.importOpen)
             .onClick(() => {
               this.runPdfImportFromRawSample();
+            })
+          // 只存在于 debug 包：用内置合成教务表格走一遍「导入 → 教务系统表格」
+          Button(this.importStarting ? '导入中…' : '用内置教务表格跑「导入 → 教务表格」')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#7FA98B')
+            .enabled(!this.importStarting && !this.importOpen)
+            .onClick(() => {
+              this.runTableImportFromRawSample();
             })
           ForEach(this.spikeLines, (line: SpikeLine) => {
             Row({ space: 4 }) {
@@ -2013,11 +2060,13 @@ struct Index {
   }
 
   /**
-   * unJavaScript 的返回值 → 可用的结果字符串。
+   * 
+unJavaScript 的返回值 → 可用的结果字符串。
    *
    * **必须把 
 ull / undefined 当成"还没有值"**：Web 组件刚挂载、页面还没执行脚本时，
-   * window.__pdfResult 是 undefined，unJavaScript 回传的文本就是 
+   * window.__pdfResult 是 undefined，
+unJavaScript 回传的文本就是 
 ull（四个字符）。
    * 以前只判空串，于是这 4 个字符被当成"解析结果"，走到底就报
    * 「无法识别的回传头: null」—— 而在模拟器上偶发一次、重试又好了，最容易误判成解析器的问题。
@@ -2186,6 +2235,103 @@ ull（四个字符）。
       this.importError = (e as Error).message;
     } finally {
       this.importStarting = false;
+    }
+  }
+
+  /**
+   * 通道三：**教务系统导出的表格**（.xls 其实是 HTML 表格 / .html）。
+   *
+   * 这条通道**没有 Web、没有 OCR**：选文件 → 读字节 → 按 UTF-8/GB18030 转文本 →
+   * JwxtTableParser 纯函数解析。所以它比另外两条稳，也能在 Node 上拿真实导出文件断言
+   * （	ests/jwxt-table.test.ts）。
+   *
+   * 文件里若带作息时间表，**不自动写**，只在预览里给一个「一并导入作息」的按钮 ——
+   * 写作息是整表替换，属于破坏性操作，得用户点头。
+   */
+  private async startImportTable(): Promise<void> {
+    if (this.importStarting) {
+      return;
+    }
+    this.importStarting = true;
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.importStarting = false;
+      return;
+    }
+    try {
+      const picked: PickedTable | null = await TableFile.pick(ctx as common.UIAbilityContext);
+      if (picked === null) {
+        return;
+      }
+      this.importOpen = true;
+      this.importBusy = true;
+      this.importError = '';
+      this.importStage = '解析表格…';
+      this.importFileName = picked.name;
+      this.importFormat = '';
+      this.importCount = 0;
+      this.importPreview = [];
+      this.importWarnings = [];
+      this.importCourses = [];
+      this.importSlots = [];
+
+      if (!TableFile.looksLikeHtml(picked.html)) {
+        this.importBusy = false;
+        this.importError = '这个文件不是网页表格（.xls/.html 的课表才走这条通道）。' +
+          '真 Excel 请另存为 PDF 或截图；扩展名是 .xls 但内容不是网页的情况，说明学校换了导出格式。';
+        return;
+      }
+      const parsed: JwxtParseResult = JwxtTableParser.parse(picked.html);
+      this.importSlots = parsed.slots;
+      const warnings: string[] = [];
+      for (const w of parsed.warnings) {
+        warnings.push(w);
+      }
+      this.feedParsedResult(
+        {
+          courses: parsed.courses,
+          format: JwxtTableParser.FORMAT,
+          warnings: warnings,
+        },
+        '表格（' + picked.encoding + '）'
+      );
+    } catch (e) {
+      this.importOpen = true;
+      this.importBusy = false;
+      this.importError = '读取表格失败：' + (e as Error).message;
+    } finally {
+      this.importStarting = false;
+    }
+  }
+
+  /** 把表格里解析出的作息写进去（整表替换，按钮上已说明） */
+  private async applyImportSlots(): Promise<void> {
+    const store: ScheduleStore | null = this.store;
+    if (store === null) {
+      return;
+    }
+    if (this.importSlots.length === 0) {
+      return;
+    }
+    try {
+      const rows: TimeSlot[] = [];
+      for (const s of this.importSlots) {
+        rows.push({
+          id: 0,
+          timetableId: 0,
+          periodIndex: s.periodIndex,
+          label: s.label,
+          startMinute: s.startMinute,
+          endMinute: s.endMinute,
+        });
+      }
+      await store.replaceSlots(rows);
+      this.importSlots = [];
+      this.importWarnings.push('作息已一并导入（' + rows.length + ' 节）');
+      await this.refreshAfterEdit();
+      this.toast({ message: '作息已更新', duration: 1500 });
+    } catch (e) {
+      this.toast({ message: '导入作息失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -3019,6 +3165,59 @@ ull（四个字符）。
         this.importStage = stage;
       });
       this.onPdfPayload(payload);
+    } catch (e) {
+      this.importBusy = false;
+      this.importError = (e as Error).message;
+    } finally {
+      this.importStarting = false;
+    }
+  }
+
+  /**
+   * 调试用（只在 debug 包的开发者入口里）：用**内置的合成教务表格**走一遍生产路径的
+   * 「导入 → 教务系统表格」通道。
+   *
+   * 和 PDF 那条一样，是为了绕开"系统文件选择器没法用命令行驱动"。
+   * 内置样张是 	ests/fixtures/jwxt-sample.html（姓名/课程全假），真实导出文件不能进仓库。
+   */
+  private async runTableImportFromRawSample(): Promise<void> {
+    if (this.importStarting) {
+      return;
+    }
+    this.importStarting = true;
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.importStarting = false;
+      return;
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+    this.importOpen = true;
+    this.importBusy = true;
+    this.importError = '';
+    this.importStage = '解析表格…';
+    this.importFileName = 'jwxt-sample.html（内置样张）';
+    this.importFormat = '';
+    this.importCount = 0;
+    this.importPreview = [];
+    this.importWarnings = [];
+    this.importCourses = [];
+    this.importSlots = [];
+    try {
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent('jwxt-sample.html');
+      const decoded = TableFile.decode(data);
+      if (!TableFile.looksLikeHtml(decoded.text)) {
+        throw new Error('内置样张不是 HTML 表格');
+      }
+      const parsed: JwxtParseResult = JwxtTableParser.parse(decoded.text);
+      this.importSlots = parsed.slots;
+      const warnings: string[] = [];
+      for (const w of parsed.warnings) {
+        warnings.push(w);
+      }
+      this.feedParsedResult(
+        { courses: parsed.courses, format: JwxtTableParser.FORMAT, warnings: warnings },
+        '表格（内置样张 · ' + decoded.encoding + '）'
+      );
     } catch (e) {
       this.importBusy = false;
       this.importError = (e as Error).message;
@@ -4102,7 +4301,6 @@ ull（四个字符）。
     return out;
   }
 }
-
 
 
 
