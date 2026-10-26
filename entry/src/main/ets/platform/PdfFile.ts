@@ -76,10 +76,27 @@ export class PdfFile {
     return helper.encodeToStringSync(new Uint8Array(buffer));
   }
 
-  /** uri 末段作为文件名 */
+  /**
+   * uri 末段作为文件名。
+   *
+   * **必须 decode**：`DocumentViewPicker` 给回来的 uri 里，中文文件名是百分号编码的，
+   * 直接取末段会得到 `%E5%88%98%E5%88%A9%E4%BA%9A(2026-2027-1)%E8%AF%BE...` 这种东西
+   * —— 真机上第一次选中文名的课表就看到了（模拟器上文件叫 `real-check.pdf`，所以一直没暴露）。
+   * 界面上那一行文件名、以及"导入为新课表"默认用的表名都取自这里。
+   *
+   * `decodeURIComponent` 遇到残缺的 `%` 会抛错，所以兜底：宁可显示编码后的原名，
+   * 也不要因为文件名让整个导入失败。
+   */
   private static baseNameOf(uri: string): string {
     const cut: number = uri.lastIndexOf('/');
     const raw: string = cut >= 0 ? uri.substring(cut + 1) : uri;
-    return raw.length === 0 ? '课表' : raw;
+    if (raw.length === 0) {
+      return '课表';
+    }
+    try {
+      return decodeURIComponent(raw);
+    } catch (e) {
+      return raw;
+    }
   }
 }
