@@ -19,6 +19,7 @@ export * from './CourseDraft.ts';
 export * from './EventDraft.ts';
 export * from './ExifOrientation.ts';
 export * from './GridFormatParser.ts';
+export * from './GridFromOcr.ts';
 export * from './InputNorm.ts';
 export * from './ListFormatParser.ts';
 export * from './Locations.ts';

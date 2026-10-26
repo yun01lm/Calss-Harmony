@@ -7,6 +7,7 @@ import {
   EventDraft,
   ExifOrientation,
   GridFormatParser,
+  GridFromOcr,
   InputNorm,
   ListFormatParser,
   Minutes,
@@ -160,8 +161,10 @@ struct Index {
   /** 是否已经需要 pdf.js（点了导入/spike 才加载页面） */
   @State webRequested: boolean = false;
 
-  // ---------------- 导入课表（PDF）
+  // ---------------- 导入课表（PDF / 课表截图）
   @State importOpen: boolean = false;
+  /** 顶栏「导入」先弹这个：PDF 文件 / 课表截图 */
+  @State importChoiceOpen: boolean = false;
   @State importBusy: boolean = false;
   @State importStage: string = '';
   @State importFileName: string = '';
@@ -285,6 +288,10 @@ struct Index {
 
       if (this.addChoiceOpen) {
         this.addChoiceCard()
+      }
+
+      if (this.importChoiceOpen) {
+        this.importChoiceCard()
       }
 
       if (this.importOpen) {
@@ -452,7 +459,8 @@ struct Index {
         .fontColor('#B4664C')
         .enabled(!this.importBusy && !this.pdfRunning)
         .onClick(() => {
-          this.startImport();
+          // 先问"从 PDF 还是从截图"：两条通道最终进同一个预览，入口只留一个
+          this.importChoiceOpen = true;
         })
     }
     .width('100%')
@@ -677,6 +685,64 @@ struct Index {
           })
       }
       .width('100%')
+    }
+    .width('100%')
+    .padding(16)
+    .backgroundColor('#FFFFFF')
+    .borderRadius({ topLeft: 16, topRight: 16 })
+    .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+  }
+
+  // ---------------------------------------------------------------- 导入来源选择
+
+  /**
+   * 「导入」先问从哪来：PDF / 截图。
+   *
+   * 两条通道的差别值得摆在用户面前，而不是让他猜：
+   * PDF 是学校原始文件，**带周次与教学班**；截图只有课名和教室，**没有周次**，
+   * 导入后按整学期算。混在一起自动判断反而会让人觉得"为什么这次少了周次"。
+   */
+  @Builder
+  importChoiceCard() {
+    Column({ space: 10 }) {
+      Row() {
+        Text('导入课表')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#3B3430')
+          .layoutWeight(1)
+        Text('取消')
+          .fontSize(12)
+          .fontColor('#E07A5F')
+          .onClick(() => {
+            this.importChoiceOpen = false;
+          })
+      }
+      .width('100%')
+
+      Text('PDF 是学校导出的原始文件，信息最全（周次、教学班都在）；截图适合只有手机截图的场合，但截图里没有周次，导入后按整学期算。')
+        .fontSize(10)
+        .fontColor('#A89C93')
+        .width('100%')
+
+      Button('从 PDF 文件')
+        .fontSize(14)
+        .height(42)
+        .width('100%')
+        .backgroundColor('#E07A5F')
+        .onClick(() => {
+          this.importChoiceOpen = false;
+          this.startImport();
+        })
+      Button('从课表截图')
+        .fontSize(14)
+        .height(42)
+        .width('100%')
+        .backgroundColor('#6C8EBF')
+        .onClick(() => {
+          this.importChoiceOpen = false;
+          this.startImportImage();
+        })
     }
     .width('100%')
     .padding(16)
@@ -2018,6 +2084,57 @@ struct Index {
     }
   }
 
+  /**
+   * 通道二：**课表截图** → OCR → 网格还原 → 同一个预览。
+   *
+   * 与 PDF 通道共用 `feedParsedResult`（归并、告警、预览格式都一致），
+   * 差别只在"文字从哪来"和"截图里没有周次"（`GridFromOcr` 会按整学期补，并写进警告）。
+   */
+  private async startImportImage(): Promise<void> {
+    if (this.importStarting) {
+      return;
+    }
+    this.importStarting = true;
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.importStarting = false;
+      return;
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+    try {
+      const uri: string | null = await Ocr.pickImage();
+      if (uri === null) {
+        // 用户取消：什么都不做，也不算错误
+        return;
+      }
+      this.importOpen = true;
+      this.importBusy = true;
+      this.importError = '';
+      this.importStage = '识别中…（首次可能要几秒）';
+      this.importFileName = '课表截图';
+      this.importFormat = '';
+      this.importCount = 0;
+      this.importPreview = [];
+      this.importWarnings = [];
+      this.importCourses = [];
+
+      const outcome: OcrOutcome = await Ocr.readLines(ability, uri);
+      this.importStage = '按网格整理…';
+      const parsed: ParseResult = GridFromOcr.parse(outcome.lines, this.totalWeeks);
+      this.feedParsedResult(
+        parsed,
+        '截图 ' + outcome.debug.width + 'x' + outcome.debug.height +
+          '、方向 ' + ExifOrientation.describe(outcome.debug.orientation)
+      );
+    } catch (e) {
+      this.importOpen = true;
+      this.importBusy = false;
+      this.importError = (e as Error).message;
+    } finally {
+      this.importStarting = false;
+    }
+  }
+
   private async startImportInner(): Promise<void> {
     const ctx: common.Context | undefined = this.getUIContext().getHostContext();
     if (ctx === undefined) {
@@ -2102,36 +2219,30 @@ struct Index {
   }
 
   /** pdf.js 回传 → 选解析器 → 生成预览（**不写库**，等用户点按钮） */
-  private onImportPayload(result: PdfExtractResult): void {
-    if (!result.ok) {
-      this.importBusy = false;
-      this.importError = '解析失败：' + result.error;
-      return;
-    }
-    if (result.runs.length === 0) {
-      this.importBusy = false;
-      this.importError = '这份 PDF 里没有可读文字（可能是扫描件）。扫描件请用"图片导入"。';
-      return;
-    }
-
-    // 两种版式都试，取认出的课更多的那个（与 Android 的自动判断一致）
-    const grid: ParseResult = GridFormatParser.parse(result.runs);
-    const list: ParseResult = ListFormatParser.parse(result.runs);
-    const best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
-
+  /**
+   * 解析结果 → 预览（**PDF 与截图两条通道共用**）。
+   *
+   * 共用是刻意的：归并、丢弃告警、预览行格式、空结果的处理，只要各写一份，
+   * 两条通道早晚出现"同一个文件在两条路上认出不一样的结果"。
+   */
+  private feedParsedResult(best: ParseResult, sourceLabel: string): void {
     if (best.courses.length === 0) {
       this.importBusy = false;
-      this.importError = '认不出课表结构：' + (best.warnings.length > 0 ? best.warnings.join('；') : '未匹配到任何课程');
+      this.importError = '认不出课表结构：' +
+        (best.warnings.length > 0 ? best.warnings.join('；') : '未匹配到任何课程');
       return;
     }
 
     // 解析器是"一格一条"输出：一门课上两次会产出两条 RawCourse，必须按
-    // 「名称+教师+地点」归并成一门课多时段（Android 的 merge() 就是干这个）
+    // 「名称+教师+教学班（有交集）」归并成一门课多时段
     const merged: MergeOutcome = mergeCourseItems(this.toImportItems(best));
     this.importCourses = merged.items;
     this.importFormat = best.format;
     this.importCount = this.importCourses.length;
-    const warnings: string[] = best.warnings.slice();
+    const warnings: string[] = [];
+    for (const w of best.warnings) {
+      warnings.push(w);
+    }
     if (merged.dropped.length > 0) {
       // 没有一条能画的时段（周次一个都没认出来）—— 留在库里就是"看不见的数据"
       const names: string = merged.dropped.slice(0, 3).join('、');
@@ -2139,6 +2250,9 @@ struct Index {
         '有 ' + merged.dropped.length + ' 门课没认出上课周次，已跳过：' + names +
           (merged.dropped.length > 3 ? ' 等' : '')
       );
+    }
+    if (sourceLabel.length > 0) {
+      warnings.push('来源：' + sourceLabel);
     }
     this.importWarnings = warnings;
 
@@ -2158,6 +2272,25 @@ struct Index {
     this.importPreview = preview;
     this.importBusy = false;
     this.importStage = '预览';
+  }
+
+  private onImportPayload(result: PdfExtractResult): void {
+    if (!result.ok) {
+      this.importBusy = false;
+      this.importError = '解析失败：' + result.error;
+      return;
+    }
+    if (result.runs.length === 0) {
+      this.importBusy = false;
+      this.importError = '这份 PDF 里没有可读文字（可能是扫描件）。扫描件请用"课表截图"导入。';
+      return;
+    }
+
+    // 两种版式都试，取认出的课更多的那个（与 Android 的自动判断一致）
+    const grid: ParseResult = GridFormatParser.parse(result.runs);
+    const list: ParseResult = ListFormatParser.parse(result.runs);
+    const best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
+    this.feedParsedResult(best, '');
   }
 
   /** RawCourse（解析结果）→ 库模型 */
@@ -2292,6 +2425,10 @@ struct Index {
     }
     if (this.textDialog.length > 0) {
       this.textDialog = '';
+      return true;
+    }
+    if (this.importChoiceOpen) {
+      this.importChoiceOpen = false;
       return true;
     }
     if (this.importOpen) {
