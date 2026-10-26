@@ -274,6 +274,40 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 | 课程编辑面板删时段的 `×` | `删` | `×`（U+00D7）虽常见，但中文界面里换成字更稳 |
 | `900×760` | `900x760` | 同上，ASCII 最保险 |
 
+### 6.9 CSP 与 resource:// 页面（加安全策略时踩的）
+
+给 `viewer.html` 加 CSP（`default-src 'none'`）之后，导入**静默变成"回传头 null"**：
+
+- `script-src 'self'` 在 `resource://rawfile/...` 页面上**不匹配**任何外部脚本，
+  `pdf.min.js` 被拦 → `pdfjsLib` undefined → 内联脚本在 `pdfjsLib.GlobalWorkerOptions` 那一行就抛，
+  `window.__runExtract` 根本没定义；
+- `runJavaScript` 调一个不存在的函数**不报错**，只回传 `null`（四个字符）；
+- 旧代码只判空串，于是 `"null"` 被当成解析结果 —— 界面报「无法识别的回传头: null」，
+  每次 force-stop 重来又可能"自己好了"（页面加载时序不同），极难定位。
+
+现在的写法（三处一起改，缺一条就还会复发）：
+
+1. CSP 用 `resource:` 而不是 `'self'`：
+   `script-src 'unsafe-inline' 'unsafe-eval' resource: blob:`、`worker-src resource: blob:`、
+   `connect-src resource: data: blob:`、`font-src resource: data: blob:`；
+2. `viewer.html` 里 `typeof pdfjsLib === 'undefined'` 时直接回 `ERR`，把原因写进 payload；
+3. ArkTS 侧把 `null` / `undefined` 当"还没有值"（`Index.valueOrEmpty`），
+   并在解析前探一下 `typeof window.__runExtract` —— 不是 `function` 就明确报"解析器页面没就绪"。
+
+### 6.10 "截图式 PDF"（每格只有课名 + 教室）
+
+`spike-timetable.pdf` 这类"把截图另存为 PDF"的课表没有 `(N-M节)1-16周/教室/老师` 详情行，
+`GridFormatParser` / `ListFormatParser` 都认不出（格子被当成"只有课名"跳过）。
+现在第三条兜底：把 pdf.js 的 run 当 OCR 行喂给 `GridFromOcr`（它本来只吃"文字 + 包围盒"），
+于是同一套网格还原逻辑两处复用。实测模拟器上认出了 3 门课，并且如实给出
+"没认出节次列，已按顺序编号"、"截图里没有周次，按整学期导入"两条警告。
+
+同一个模块在真机截图验证时踩到过两个必须记住的坑（`tests/grid-from-ocr.test.ts` 已钉住）：
+
+- `实验室503-504` 这种门牌被当成 `3-50 周` → **周次必须带"周"字**，且范围要在 1..MAX_WEEK；
+- 表头上方的「2026 春季学期课表」被当成一门课 → 表头以上的行一律不算课程；
+  同理，格子里**教室排在课名上面**时（`1-101` / `高等数学`），不能拿第一行当课名。
+
 ## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。

@@ -10,7 +10,7 @@
     不写 CSP 的话，一旦 rawfile 被换掉/被注入，页面就能任意加载外部脚本 —— 威胁很弱，但不是零。
   -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; connect-src data: blob:; worker-src 'self' blob:; font-src data: blob:;" />
+        content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' resource: blob:; style-src 'unsafe-inline' resource:; img-src resource: data: blob:; connect-src resource: data: blob:; worker-src resource: blob:; font-src resource: data: blob:;" />
   <title>pdf.js worker page</title>
   <style>
     html, body { margin: 0; padding: 0; background: #fff; font: 12px sans-serif; }
@@ -175,6 +175,19 @@
   window.__runExtract = function (base64) {
     window.__pdfResult = '';
     window.__pdfError = '';
+    /*
+     * pdf.js 没加载出来时**必须明说**：脚本被拦（CSP）或缺文件时，pdfjsLib 是 undefined，
+     * 后面每一行都会抛，而 ArkTS 侧 unJavaScript 的返回值只是 undefined → 字面量 "null"，
+     * 界面上就成了 "无法识别的回传头: null" —— 排查十分钟也想不到是 CSP。
+     * （2026-10-26 加 CSP 时正是这么踩的：script-src 'self' 不匹配 resource:// 页面。）
+     */
+    if (typeof pdfjsLib === 'undefined') {
+      var missing = 'ERR\tpdf.js 没能加载（脚本被 CSP/资源限制拦住了，或 pdf.min.js 缺失）\nEND';
+      window.__pdfError = missing;
+      log('失败：pdf.js 未加载');
+      send(missing);
+      return;
+    }
     log('解析中…');
     extractAll(base64).then(function (r) {
       log('完成：' + r.numPages + ' 页 / ' + (r.lines.length - 1) + ' 个文本片段');

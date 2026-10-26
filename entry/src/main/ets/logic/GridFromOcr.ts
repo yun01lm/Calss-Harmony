@@ -88,10 +88,19 @@ export class GridFromOcr {
     }
 
     const dayLinePool: OcrLine[] = [];
+    // 表头**以上**的东西（标题、学期名、打印时间）不是课程。
+    // 实测：样张顶部的「2026 春季学期课表（合成夹具…）」被当成了一门课。
+    const headerCut: number = headerY === null
+      ? -Number.MAX_SAFE_INTEGER
+      : headerY + GridFromOcr.medianLineHeight(usable) * 0.9;
     for (const l of usable) {
-      if (GridFromOcr.dayOf(l.text) === null) {
-        dayLinePool.push(l);
+      if (GridFromOcr.dayOf(l.text) !== null) {
+        continue;
       }
+      if (l.centerY <= headerCut) {
+        continue;
+      }
+      dayLinePool.push(l);
     }
 
     const rows: Row[] = GridFromOcr.rows(dayLinePool, columns, warnings);
@@ -353,24 +362,34 @@ export class GridFromOcr {
     rows: Row[],
     totalWeeks: number
   ): RawCourse | null {
-    const names: string[] = [];
+    // 逐行分成"课名候选"和"其余"。
+    //
+    // 不能简单地把第一行当课名：真实截图里**教室常常排在课名上面**（`1-101` / `实验室503-504`），
+    // 那样会把门牌号当课名（实测样张就出现了一门叫 "1-101" 的课）。
+    // 规则：跳过开头的"像教室"的行（记进 extras），第一个不像教室的行才是课名。
+    let name: string = '';
+    let category: string = '';
     const extras: string[] = [];
     for (const l of cell.lines) {
       const t: string = l.text.trim();
       if (t.length === 0) {
         continue;
       }
-      if (names.length === 0) {
-        names.push(t);
-      } else {
-        extras.push(t);
+      if (name.length === 0 && !GridFromOcr.looksLikeRoom(t)) {
+        const cleaned = ParsingUtils.cleanName(t);
+        name = cleaned[0].length > 0 ? cleaned[0] : t;
+        category = cleaned[1];
+        continue;
       }
+      extras.push(t);
     }
-    if (names.length === 0) {
-      return null;
+    if (name.length === 0 && extras.length > 0) {
+      // 整格都"像教室"（例如只有一行 `1-101`）：宁可把它当课名，也不要让这一格凭空消失
+      const fallback = ParsingUtils.cleanName(extras[0]);
+      name = fallback[0].length > 0 ? fallback[0] : extras[0].trim();
+      category = fallback[1];
+      extras.shift();
     }
-    const cleaned = ParsingUtils.cleanName(names[0]);
-    const name: string = cleaned[0].length > 0 ? cleaned[0] : names[0].trim();
     if (name.length === 0) {
       return null;
     }
@@ -424,7 +443,7 @@ export class GridFromOcr {
       name: name,
       teacher: teacher,
       location: location,
-      category: cleaned[1],
+      category: category,
       schedules: [schedule],
     };
     return course;
@@ -458,14 +477,24 @@ export class GridFromOcr {
     return hit;
   }
 
-  /** 格子里写了 `1-16周` / `1-15单` 就按它算，否则整学期 */
+  /**
+   * 格子里写了 `1-16周` / `1-15单` 就按它算，否则整学期。
+   *
+   * **必须带"周"字**：截图里到处是 `503-504`（教学楼门牌）、`1-101`（教室）这种数字区间，
+   * 不要求"周"就会把它们当周次 —— 实测样张里的 `实验室503-504` 被认成了 `3-50 周`。
+   * 另外解析出来的周次必须落在 1..MAX_WEEK 内，否则宁可当"没写"。
+   */
   private static weeksOf(cell: Cell, totalWeeks: number): bigint {
     for (const l of cell.lines) {
-      const found = /(\d{1,2}\s*[-~–—]\s*\d{1,2}\s*周?(?:[单双])?)/.exec(l.text);
+      const found = /(\d{1,2}\s*[-~–—]\s*\d{1,2})\s*周\s*([单双])?/.exec(l.text);
       if (found !== null) {
-        const mask: bigint = WeekMasks.parse(found[1]);
-        if (mask !== BigInt(0)) {
-          return mask;
+        const from: number = Number.parseInt(found[1].replace(/[^0-9].*$/, ''), 10);
+        const to: number = Number.parseInt(found[1].replace(/^[^0-9]*-|[^0-9]/g, ''), 10);
+        if (Number.isFinite(from) && Number.isFinite(to) && from >= 1 && from <= to && to <= WeekMasks.MAX_WEEK) {
+          const mask: bigint = WeekMasks.parse(found[1] + (found[2] !== undefined ? found[2] : ''));
+          if (mask !== BigInt(0)) {
+            return mask;
+          }
         }
       }
     }

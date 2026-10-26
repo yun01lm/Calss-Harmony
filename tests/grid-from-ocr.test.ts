@@ -148,3 +148,51 @@ test('fullSemester：总周数不合法时退回 20 周（不是空掩码）', (
   assert.equal(Number(GridFromOcr.fullSemester(0)), (1 << 20) - 1);
   assert.equal(Number(GridFromOcr.fullSemester(18)), (1 << 18) - 1);
 });
+
+// ---------------------------------------------------------------- 回归：真机/样张上踩到的两条
+
+test('门牌号不会被当周次（"实验室503-504" 不是 3-50 周）', () => {
+  const lines: OcrLine[] = base();
+  lines.push(line('软件工程', dayX(1), 150, 100));
+  lines.push(line('实验室503-504', dayX(1), 168, 130));
+
+  const r: ParseResult = GridFromOcr.parse(lines, TOTAL_WEEKS);
+  assert.equal(r.courses.length, 1);
+  assert.equal(r.courses[0].location, '实验室503-504');
+  assert.equal(
+    Number(r.courses[0].schedules[0].weekMask),
+    (1 << TOTAL_WEEKS) - 1,
+    '没有"周"字的数字区间不能当周次，应回落到整学期'
+  );
+  assert.ok(r.warnings.some((w) => w.indexOf('没有周次') >= 0), '并且要提示按整学期导入');
+});
+
+test('表头以上的标题不会被当成一门课', () => {
+  const lines: OcrLine[] = [];
+  const names: string[] = ['星期一', '星期二', '星期三', '星期四', '星期五'];
+  for (let d = 1; d <= 5; d++) {
+    lines.push(line(names[d - 1], dayX(d), 100, 70));
+  }
+  // 表头上方：学期标题
+  lines.push(line('2026 春季学期课表', dayX(3), 60, 200));
+  for (let p = 1; p <= 3; p++) {
+    lines.push(line(String(p), 60, 160 + (p - 1) * 100, 20));
+  }
+  lines.push(line('操作系统', dayX(3), 150, 100));
+
+  const r: ParseResult = GridFromOcr.parse(lines, TOTAL_WEEKS);
+  assert.equal(r.courses.length, 1, '只应有真正的课程');
+  assert.equal(r.courses[0].name, '操作系统');
+});
+
+test('教室里排在课名上面时，不会把门牌号当课名', () => {
+  const lines: OcrLine[] = base();
+  // 先教室、后课名（真实截图里很常见）
+  lines.push(line('1-101', dayX(5), 150, 60));
+  lines.push(line('高等数学', dayX(5), 168, 100));
+
+  const r: ParseResult = GridFromOcr.parse(lines, TOTAL_WEEKS);
+  assert.equal(r.courses.length, 1);
+  assert.equal(r.courses[0].name, '高等数学');
+  assert.equal(r.courses[0].location, '1-101');
+});

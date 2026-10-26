@@ -76,6 +76,12 @@ export class PdfFile {
     return helper.encodeToStringSync(new Uint8Array(buffer));
   }
 
+  /** Uint8Array → base64（内置样张走同一条 pdf.js 通道时用） */
+  static toBase64(bytes: Uint8Array): string {
+    const helper: util.Base64Helper = new util.Base64Helper();
+    return helper.encodeToStringSync(bytes);
+  }
+
   /**
    * uri 末段作为文件名。
    *

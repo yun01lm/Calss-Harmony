@@ -26,7 +26,7 @@ import {
   type DraftRow,
   type EventDraftResult,
   type EventLike,
-  type OcrLine,
+  OcrLine,
   type ParseResult,
   type PdfExtractResult,
   type RecognizedPeriod,
@@ -1746,6 +1746,17 @@ struct Index {
               this.runSlotsImportFromRawSample();
             })
 
+          // 只存在于 debug 包：用内置合成课表 PDF 走一遍**生产路径**的「导入 → PDF」，
+          // 用来在改过 viewer.html（CSP / 异常释放）之后复验，绕开无法脚本化的系统文件选择器
+          Button(this.importStarting ? '导入中…' : '用内置课表样张跑「导入 → PDF」')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#5B7C99')
+            .enabled(!this.importStarting && !this.importOpen)
+            .onClick(() => {
+              this.runPdfImportFromRawSample();
+            })
           ForEach(this.spikeLines, (line: SpikeLine) => {
             Row({ space: 4 }) {
               Text(line.ok ? '✓' : '✗')
@@ -1987,18 +1998,39 @@ struct Index {
     const started: number = Date.now();
     while (Date.now() - started < timeoutMs) {
       const rawError: string | null = await this.runJs(PdfJs.ERROR_SCRIPT);
-      const errorPayload: string = rawError === null ? '' : Index.decodeJsString(rawError);
+      const errorPayload: string = Index.valueOrEmpty(rawError);
       if (errorPayload.length > 0) {
         return errorPayload;
       }
       const raw: string | null = await this.runJs(PdfJs.RESULT_SCRIPT);
-      const payload: string = raw === null ? '' : Index.decodeJsString(raw);
+      const payload: string = Index.valueOrEmpty(raw);
       if (payload.length > 0) {
         return payload;
       }
       await Index.sleep(150);
     }
     return '';
+  }
+
+  /**
+   * unJavaScript 的返回值 → 可用的结果字符串。
+   *
+   * **必须把 
+ull / undefined 当成"还没有值"**：Web 组件刚挂载、页面还没执行脚本时，
+   * window.__pdfResult 是 undefined，unJavaScript 回传的文本就是 
+ull（四个字符）。
+   * 以前只判空串，于是这 4 个字符被当成"解析结果"，走到底就报
+   * 「无法识别的回传头: null」—— 而在模拟器上偶发一次、重试又好了，最容易误判成解析器的问题。
+   */
+  private static valueOrEmpty(raw: string | null): string {
+    if (raw === null) {
+      return '';
+    }
+    const text: string = Index.decodeJsString(raw).trim();
+    if (text === 'null' || text === 'undefined') {
+      return '';
+    }
+    return text;
   }
 
   private static sleep(ms: number): Promise<void> {
@@ -2225,6 +2257,13 @@ struct Index {
         throw new Error('解析器加载失败（30 秒内没就绪），请重试');
       }
       onStage('解析中…');
+      // 进解析之前先确认页面的入口函数真的在：pdfjsLib 没加载时（CSP 拦了 / 文件缺失）
+      // 这个函数根本不会定义，而 runJavaScript 对"调不存在的函数"**不报错**，
+      // 只会一路返回 null，最后表现为"解析超时"或"回传头不对"。
+      const probe: string = Index.valueOrEmpty(await this.runJs('typeof window.__runExtract'));
+      if (probe !== 'function') {
+        throw new Error('解析器页面没就绪（入口函数不存在），请重试；反复出现请反馈');
+      }
       // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
       await this.runJs(PdfJs.CLEAR_SCRIPT);
       this.webController.runJavaScript(PdfJs.extractCall(base64));
@@ -2311,7 +2350,23 @@ struct Index {
     // 两种版式都试，取认出的课更多的那个（与 Android 的自动判断一致）
     const grid: ParseResult = GridFormatParser.parse(result.runs);
     const list: ParseResult = ListFormatParser.parse(result.runs);
-    const best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
+    let best: ParseResult = grid.courses.length >= list.courses.length ? grid : list;
+
+    // 第三种：**"打印出来的截图式课表"**（每格只有课名 + 教室，没有 "(N-M节)1-16周/…" 详情行）。
+    // 这类 PDF 两个解析器都认不出，但它有坐标 —— 正好是 GridFromOcr 的输入形状，
+    // 于是把 run 当作"OCR 行"再喂一遍（没有周次，按整学期算并给出警告）。
+    // 实测触发场景：spike-timetable.pdf（合成样张）与"把截图另存为 PDF"的课表。
+    if (best.courses.length === 0) {
+      const pseudo: OcrLine[] = [];
+      for (const r of result.runs) {
+        pseudo.push(new OcrLine(r.text, r.x, r.y, r.endX, r.y + r.fontSize));
+      }
+      const fromLayout: ParseResult = GridFromOcr.parse(pseudo, this.totalWeeks);
+      if (fromLayout.courses.length > 0) {
+        best = fromLayout;
+      }
+    }
+
     this.feedParsedResult(best, '');
   }
 
@@ -2921,6 +2976,54 @@ struct Index {
       this.slotImportError = (e as Error).message;
     } finally {
       this.slotImportStarting = false;
+    }
+  }
+
+  /**
+   * 调试用（只在 debug 包的开发者入口里）：用**内置的合成课表 PDF** 走一遍生产路径的
+   * 「导入 → PDF」通道（`extractPdfPayload` → viewer.html → 预览）。
+   *
+   * 存在的理由：这条通道唯一的人工验法是"点导入 → 系统文件选择器 → 挑一份 PDF"，
+   * 而**文件选择器没法用命令行驱动**（`uitest dumpLayout` 看不到系统面板）。
+   * 有了这个按钮，改过 viewer.html（比如加 CSP）之后能一条命令复验：
+   * `hdc shell uitest uiInput click …` 点一下，然后看预览里有多少门课。
+   *
+   * 用的是随包发布的 `spike-timetable.pdf`（合成数据，没有姓名），不是真实课表。
+   */
+  private async runPdfImportFromRawSample(): Promise<void> {
+    if (this.importStarting) {
+      return;
+    }
+    this.importStarting = true;
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.importStarting = false;
+      return;
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+    this.importOpen = true;
+    this.importBusy = true;
+    this.importError = '';
+    this.importStage = '读取内置样张…';
+    this.importFileName = 'spike-timetable.pdf（内置样张）';
+    this.importFormat = '';
+    this.importCount = 0;
+    this.importPreview = [];
+    this.importWarnings = [];
+    this.importCourses = [];
+    try {
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent('spike-timetable.pdf');
+      const base64: string = PdfFile.toBase64(data);
+      this.pdfPurpose = 'import';
+      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
+        this.importStage = stage;
+      });
+      this.onPdfPayload(payload);
+    } catch (e) {
+      this.importBusy = false;
+      this.importError = (e as Error).message;
+    } finally {
+      this.importStarting = false;
     }
   }
 
