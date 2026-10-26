@@ -19,7 +19,7 @@
 | 3b | 课程编辑：点空白格新建 / 点色块编辑·删除；学期设置（开学日 / 总周数）—— **253 断言 + 实机建·改·删** | ✅ |
 | 3c | 自定义安排：点空白格选「自定义安排」新建 / 点色块编辑·删除（标题、备注、星期、起止节、周次）—— **270 断言 + 实机建·改·删·重启留存** | ✅ |
 | 3d | 作息：编辑（节次号/分组/起止）、加一节、从其他课表复制；**导入作息**三条通道（图片 OCR / 粘贴文本 / PDF）→ 校对页 → 整表替换 —— **295 断言 + 实机（OCR 识别待真机）** | ✅ |
-| 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`） | ✅ |
+| 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`）；**真机 Pura 70 / HarmonyOS 7.0 实测**：冷启动 381 ms（release）、图片 OCR 跑通 | ✅ |
 
 ## 环境
 
@@ -45,6 +45,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 
 产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`
 
+> 真机安装需要签名：DevEco Studio → `File → Project Structure → Signing Configs` → 勾「自动生成签名」。该操作会把签名材料（`.p12/.cer/.p7b`，在 `%USERPROFILE%\.ohos\config`）的路径写进 `build-profile.json5` —— **属于个人材料，不进仓库**，换机器时重新勾一次即可。
 > 注：工程里**不提交** `hvigorw` / `hvigorw.bat` / `hvigor/hvigor-wrapper.js`
 > —— 它们由 DevEco 在首次 Sync 时按你的 IDE 版本生成；手工拷贝 IDE 内部的 launcher 会因缺少 `hvigorw.js` 而失败。
 
@@ -53,7 +54,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 | 项 | 结果 |
 |---|---|
 | ArkTS 编译 | ✅ `BUILD SUCCESSFUL`（33 tasks，约 8~13 s） |
-| HAP 打包 | ✅ `entry-default-unsigned.hap`（release 2.39 MB，其中 pdf.js 1.51 MB） |
+| HAP 打包 | ✅ release 2.39 MB（未签名）/ 2.43 MB（debug 签名 HAP），其中 pdf.js 1.51 MB |
 | 编译确实在检查类型 | ✅ 故意把 `number` 赋成 `'x'` → `ArkTS Compiler Error` |
 | 关键配置坑 | `modelVersion` 必须 **6.0.0**；SDK 版本串必须是 **"26.0.0"**（不是 `"26.0.0(26)"`） |
 

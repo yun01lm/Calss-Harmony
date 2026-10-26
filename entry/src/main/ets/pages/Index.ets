@@ -1637,6 +1637,19 @@ struct Index {
               this.runSpikes();
             })
 
+          // 只存在于 debug 包：用内置的作息样图走一遍**生产路径**的「导入作息 → 识别图片」
+          // （`Ocr.readLines` → `finishSlotParse` → 校对页）。真机上系统相册里不一定有样图，
+          // 而这一步要验的正是"识别出来的行能不能进校对页"。
+          Button(this.slotImportStarting ? '识别中…' : '用内置作息样图跑「导入作息 → 识别图片」')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#9A8C82')
+            .enabled(!this.slotImportStarting)
+            .onClick(() => {
+              this.runSlotsImportFromRawSample();
+            })
+
           ForEach(this.spikeLines, (line: SpikeLine) => {
             Row({ space: 4 }) {
               Text(line.ok ? '✓' : '✗')
@@ -2682,6 +2695,55 @@ struct Index {
       }
       this.slotImportStage = '识别中…（首次可能要几秒）';
       const outcome: OcrOutcome = await Ocr.readLines(ctx as common.UIAbilityContext, uri);
+      this.finishSlotParse(
+        outcome.lines,
+        '图片 ' + outcome.debug.width + '×' + outcome.debug.height +
+          '、方向 ' + ExifOrientation.describe(outcome.debug.orientation)
+      );
+    } catch (e) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = (e as Error).message;
+    } finally {
+      this.slotImportStarting = false;
+    }
+  }
+
+  /**
+   * 调试用（只在 debug 包的开发者入口里）：把内置的作息样图跑一遍**生产路径**的图片通道 ——
+   * `Ocr.readLines`（解码 + EXIF + OCR）→ `TimetableTextParser` → 校对页。
+   *
+   * 与真实入口唯一的差别是"图从哪来"：这里从 rawfile 复制到 cacheDir，真机上是系统相册。
+   * 之所以需要它：真机相册里不一定有作息表图片，而这一段（识别结果能不能进校对页）
+   * 是图片通道里唯一还没在设备上走过的地方。
+   */
+  private async runSlotsImportFromRawSample(): Promise<void> {
+    if (this.slotImportStarting) {
+      return;
+    }
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      return;
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+    this.slotImportStarting = true;
+    this.openSlotsImport();
+    this.slotImportPhase = 'parsing';
+    this.slotImportSource = '图片（内置样图）';
+    this.slotImportStage = '准备样图…';
+    try {
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent('spike-schedule.png');
+      const path: string = ability.cacheDir + '/slots-sample.png';
+      const file: fileIo.File = fileIo.openSync(
+        path,
+        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
+      );
+      try {
+        fileIo.writeSync(file.fd, data.buffer as ArrayBuffer);
+      } finally {
+        fileIo.closeSync(file);
+      }
+      this.slotImportStage = '识别中…（首次可能要几秒）';
+      const outcome: OcrOutcome = await Ocr.readLines(ability, path);
       this.finishSlotParse(
         outcome.lines,
         '图片 ' + outcome.debug.width + '×' + outcome.debug.height +

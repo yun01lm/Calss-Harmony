@@ -11,12 +11,14 @@
 测法：`aa force-stop` → `hilog -r` → `aa start` → 取**进程第一条日志**（`APPSPAWN: AppSpawnChild`）
 到 `WMSMain: NotifyCompleteFirstFrameDrawing` 的时间差，取 3 次。
 
-| 构建 | 各次（ms） | 中位数 |
-|---|---|---|
-| debug · 首帧就挂隐藏 WebView（加载 pdf.js） | 1042 / 1446 / 1223 | **1223** |
-| debug · WebView 常驻但停在 about:blank | 1102 / 1244 / 1095 | **1102** |
-| debug · WebView **用时才创建**（最终方案） | 698 / 737 / 660 | **698** |
-| release（AOT）· 懒创建 | 598 / 692 / 644 | **644** |
+| 环境 | 构建 | 各次（ms） | 中位数 |
+|---|---|---|---|
+| 模拟器（x86，软件渲染） | debug · 首帧就挂隐藏 WebView（加载 pdf.js） | 1042 / 1446 / 1223 | **1223** |
+| 模拟器 | debug · WebView 常驻但停在 about:blank | 1102 / 1244 / 1095 | **1102** |
+| 模拟器 | debug · WebView **用时才创建**（最终方案） | 698 / 737 / 660 | **698** |
+| 模拟器 | release（AOT）· 懒创建 | 598 / 692 / 644 | **644** |
+| **真机 Pura 70** | **debug** · 懒创建 | 403 / 395 / 372 | **395** |
+| **真机 Pura 70** | **release（AOT）** · 懒创建 | 381 / 385 / 362 | **381** |
 
 结论：
 1. **只要 Web 组件在组件树里，进程启动就要为 ArkWeb 付约 0.4~0.5s**
@@ -27,8 +29,12 @@
    在这台设备上都会出问题，见下节）。
 3. release 与 debug 差别不大 → **瓶颈不在 ArkTS 代码**，而在 ArkUI 引擎与模拟器的软件渲染。
    首帧不做任何数据库操作（`EntryAbility.onCreate` 为空，`aboutToAppear` 只是发起异步加载）。
-4. 与 Android 版（178 ms）比，这台模拟器上约慢 3.5 倍。**真机预期明显更快**，
-   但这一条目前**没有真机数据**，不作承诺。
+4. **真机上量到了**（2026-10-26，Pura 70 / HarmonyOS 7.0 / API 26）：debug **395 ms**、
+   release **381 ms**，比模拟器快约 1.8 倍。release 与 debug 只差 14 ms —— 再次说明启动开销
+   主要不在 ArkTS 代码。
+5. 与 Android 版那次 178 ms **不同设备、不可直接比较**：那个数字来自同一台 Windows 上的
+   Android 模拟器，没有 ArkWeb 这种系统级浏览器引擎的初始化成本。同机对比得把 Android 版
+   也装到这台手机上（目前没装）。
 
 ### 1.1 用完 pdf.js 就把 Web 放掉（`releaseWeb`）
 
@@ -78,7 +84,7 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 |---|---|
 | Node 断言 | **295 条 / 19 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
 | 架构守卫 | `logic/`、`data/` 零平台依赖、相对 import 带 `.ts`、不跨层（`node tools/check-architecture.mjs`，见第 8 节） |
-| ArkTS 构建 | `BUILD SUCCESSFUL`（debug 与 release 都验过，release 装到模拟器跑过） |
+| ArkTS 构建 | `BUILD SUCCESSFUL`（debug 与 release 都验过；**两种构建都装到真机 Pura 70 跑过**，release 的签名 HAP 2.43 MB / 未签名 2.39 MB） |
 | CI | GitHub Actions：每次 push / PR 跑全部断言 + 架构守卫脚本 |
 
 ## 5. 功能覆盖（相对 Android 版）
@@ -93,8 +99,8 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 | 新建/编辑课程（点空白格新建、点色块编辑·删除） | ✅ 实机建·改·删都验过（`evidence/32~35`） |
 | 学期设置（开学日 / 总周数，周视图顶部进） | ✅ 实机改过 20 → 18 周（`evidence/34`） |
 | 自定义安排（点空格选类型、新建/编辑/删除、详情卡） | ✅ 实机建·改·删 + 重启留存 + 周次掩码跨周验证（`evidence/39~47`） |
-| 导入作息（三条通道 → 校对页 → 整表替换） | ✅ 粘贴文本 / PDF 文字层端到端验过；图片 OCR 只验到"能开相册、取消不算错、失败可诊断"（模拟器无 OCR 后端）（`evidence/52~56`） |
-| 图片 OCR 的真实识别效果 | ⬜ **需真机**：模拟器镜像没有 OCR 后端（`1001400001`），只验到"能开系统相册 / 取消不算错误 / 失败给的是可诊断的话" |
+| 导入作息（三条通道 → 校对页 → 整表替换） | ✅ 粘贴文本 / PDF 文字层端到端验过（模拟器）；**图片 OCR 已在真机跑通生产路径**（认出 8 节 → 校对页 → 应用），只剩「相册选图」那一下没验（`evidence/52~60`） |
+| 图片 OCR 的真实识别效果 | ✅ **真机验过**（Pura 70 / HarmonyOS 7.0）：中文识别、包围盒、作息解析、校对页、写库全通（§5.3）；仅「相册选图」一步待补 |
 
 ### 5.1 自定义安排的实机验证（逐条对应截图）
 
@@ -134,6 +140,23 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 
 > 图片 OCR 的**识别效果**在这台模拟器上验不了（系统镜像没有 OCR 后端）。代码路径已按
 > `Core Vision Kit` 的 API 写完，失败分支在设备上走通过（错误码翻译成了可行动的话）。
+### 5.3 真机上的图片 OCR（2026-10-26 · Pura 70）
+
+这一条之前一直挂起（模拟器没有 OCR 后端）。真机上跑通了：
+
+| 验的点 | 做法 | 结果 | 证据 |
+|---|---|---|---|
+| Core Vision Kit 可用 | 开发者入口 → 跑 spike | `typeof textRecognition = object`、`init() = true`、支持语言 `zh-CN, en, ja, ko, zh-TW` | `59-devpanel-ocr-device` |
+| 中文识别 + 包围盒 | 同一按钮（内置 900×760 作息样图） | 4 块 / 161 字符 / **11 行带包围盒**，首行 `(52,41) 作息时间表(合成夹具)` | `59-devpanel-ocr-device` |
+| OCR → 作息解析 | 同上 | **8 节**（第 1 节 8:00-8:45 … 第 10 节 19:50-20:35），并如实报告：2 行是课间已跳过、第 7/8 节没认出来 | `59-devpanel-ocr-device` |
+| **生产路径**（不是 spike 的代码） | 开发者入口 → 「用内置作息样图跑「导入作息 → 识别图片」」（debug 专属入口） | 走的是 `Ocr.readLines`（解码 + EXIF + OCR）→ `TimetableTextParser` → **校对页**：认出 8 节、三条提示齐全、8 行可改 | `57-ocr-import-review-device` |
+| 写库 | 校对页 → 应用到课表 | 作息页只剩这 8 节（第 1-6、9、10），与识别结果一致；随后「恢复默认 12 节」复原 | `60-slots-restored-device` |
+
+**仍然没验的一步**：系统相册选图那一下（`photoAccessHelper` 返回的 media URI → `fileIo.openSync`
+→ `image.createImageSource(fd)`）。原因很实际：这台是用户的日常机，`/storage/media/100/local/files`
+写不进去（`permission denied`），`mediatool` 只有 recv/delete/query/ls、没有 send，
+没法把样图塞进相册。等之后手机相册里有一张作息表截图时，点一次「识别图片」即可确认。
+
 ## 6. 踩过的平台坑（都花了实机调试时间，记下来）
 1. **`runJavaScript` 的返回值是 JSON 字面量**：JS 里返回空串，ArkTS 侧收到的是 `""`（两个引号）；
    返回 `"1"` 时收到的是 `"\"1\""`。一开始拿它直接判空/比较，导致
@@ -148,7 +171,30 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 5. **`resource://rawfile` 上不能发 XHR/fetch**（CORS 只允许 arkweb/http/https/data），
    所以 pdf.js 的中文 CMap 只能内联成 JS 变量，不能走 `cMapUrl` 目录。
 
-## 6.5 真机验证为什么没做成（2026-10-25 实测）
+## 6.5 真机验证（2026-10-26 · HUAWEI Pura 70 / HarmonyOS 7.0.0）
+
+| 项 | 值 | 怎么得到的 |
+|---|---|---|
+| 设备 | HUAWEI Pura 70（ADY-AL00），序列号 2MH0224627004255 | `hdc shell param get const.product.model` |
+| 系统 | **HarmonyOS 7.0.0.109(SP6C00E105R5P2)** / OpenHarmony-7.0.0.105 | `param get const.product.software.version` / `const.ohos.fullname` |
+| API | **26**（与本工程 `compatibleSdkVersion` 一致） | `param get const.ohos.apiversion` |
+| 屏幕 | 1256 × 2760 | `snapshot_display` |
+| 安装 | `entry-default-signed.hap` → `install bundle successfully` | `hdc install -r` |
+
+**第一次是装不上的**，两个卡点都值得记：
+
+1. 上一台接上来的是 nova 12 Ultra / HarmonyOS **4.2**（Android 内核）：`adb devices` 能看到，
+   `hdc list targets` 是 `[Empty]`。4.2 只能跑 APK，HAP 装不上去。
+2. 这台 Pura 70 是纯血鸿蒙、API 也对，但 `hdc install` 直接拒绝：
+   `code:9568320 error: no signature file`。真机验签是硬性的，`bm install` 没有任何跳过开关；
+   必须用 DevEco 的「自动签名」生成调试证书 + profile（profile 绑定设备 UDID，只能在线申请）。
+   签完 `build-profile.json5` 里的 product 还要加一行 `signingConfig: "default"`，
+   否则 hvigor 仍然只产出 `entry-default-unsigned.hap`（日志：`WARN: No signingConfig found`）。
+
+> 签名材料在 `%USERPROFILE%\.ohos\config`，含个人证书与口令，**不进仓库**；
+> 换机器/换设备时在 DevEco 里重新勾一次自动签名即可。
+
+## 6.6 上一台设备为什么没做成（2026-10-25 留档）
 
 用户接了一台真机上来，结果**装不进去**，原因值得记一笔：
 
@@ -172,6 +218,18 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 在拿到这样的设备之前，**「图片 OCR 识别效果」与「真机冷启动」两条只能继续挂起**；
 模拟器上的结论（295 条断言、冷启动 698 ms/644 ms、各功能实测）保持有效。
 
+### 6.7 真机上多踩的两个小坑
+
+1. **`hdc list targets` 一开始是 `[Empty]`，重启 hdc server 才枚举到设备**
+   （`hdc kill` → `hdc start` → `2MH0224627004255` 出现）。
+   同时 `Get-PnpDevice` 里能看到 `HDC Device (VID_12D1&PID_5000)` —— 说明设备和驱动没问题，
+   是 server 侧的枚举卡住了。上一次同样的现象发生在 HarmonyOS 4.2 那台机器上，
+   那次是真的不支持（只能用 adb），两者要分清。
+2. **`uinput -T -m` 的滑动参数是 4 个坐标**（`-m x1 y1 x2 y2`），写成两段会报
+   `wrong number of parameters: 5`；要用滑动优先 `uitest uiInput swipe x1 y1 x2 y2 [ms]`。
+3. 用 `uitest dumpLayout` 取坐标前先确认**当前前台是我们的应用**：一次连点标题时，
+   屏幕上正好压着一条微信通知，5 次点击把微信点开了。之后改成先 dump 出标题的
+   `bounds` 再点它的中心。
 ## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。
