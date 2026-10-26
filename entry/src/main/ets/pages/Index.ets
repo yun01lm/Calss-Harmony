@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import { fileIo } from '@kit.CoreFileKit';
 import BuildProfile from 'BuildProfile';
 import { webview } from '@kit.ArkWeb';
@@ -59,6 +60,17 @@ import { WeekGrid } from '../view/WeekGrid';
 import { CourseEditor } from '../view/CourseEditor';
 import { EventEditor } from '../view/EventEditor';
 import { SlotEditor } from '../view/SlotEditor';
+
+/**
+ * 轻提示的参数（形状与系统 `promptAction.ShowToastOptions` 一致，只留用到的两个字段）。
+ *
+ * 单独声明而不是直接传对象字面量：ArkTS 里对象字面量必须有明确的类型来源，
+ * 而调用点有三十处，统一在一个地方定义最省事。
+ */
+interface ToastOptions {
+  readonly message: string;
+  readonly duration?: number;
+}
 
 /**
  * 主页：周视图。
@@ -2356,7 +2368,7 @@ struct Index {
         await store.replaceCourses(this.importCourses);
       } else if (mode === 'merge') {
         const r = await store.mergeCourses(this.importCourses);
-        this.getUIContext().getPromptAction().showToast({ message: `合并完成：新增 ${r.added} 门，更新 ${r.updated} 门`, duration: 2000 });
+        this.toast({ message: `合并完成：新增 ${r.added} 门，更新 ${r.updated} 门`, duration: 2000 });
       } else {
         const snap: Snapshot = await store.snapshot();
         const start: number = snap.timetable === null
@@ -2474,7 +2486,7 @@ struct Index {
       this.screen = 'timetables';
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '读取课表列表失败：' + err.message, duration: 2000 });
+      this.toast({ message: '读取课表列表失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2511,7 +2523,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '切换失败：' + err.message, duration: 2000 });
+      this.toast({ message: '切换失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2520,10 +2532,10 @@ struct Index {
       const store: ScheduleStore = await this.openStore();
       await store.setPrimary(store.currentId);
       this.timetables = await store.allTimetables();
-      this.getUIContext().getPromptAction().showToast({ message: '已设为主课表', duration: 1500 });
+      this.toast({ message: '已设为主课表', duration: 1500 });
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '设置失败：' + err.message, duration: 2000 });
+      this.toast({ message: '设置失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2534,7 +2546,7 @@ struct Index {
       this.openPrimaryOnLaunch = isOn;
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
+      this.toast({ message: '保存失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2567,7 +2579,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + err.message, duration: 2000 });
+      this.toast({ message: '删除失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2575,7 +2587,7 @@ struct Index {
     const name: string = this.textValue.trim();
     const mode: string = this.textDialog;
     if (name.length === 0) {
-      this.getUIContext().getPromptAction().showToast({ message: '名字不能为空', duration: 1500 });
+      this.toast({ message: '名字不能为空', duration: 1500 });
       return;
     }
     try {
@@ -2597,7 +2609,7 @@ struct Index {
       this.textDialog = '';
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + err.message, duration: 2000 });
+      this.toast({ message: '保存失败：' + err.message, duration: 2000 });
     }
   }
 
@@ -2630,7 +2642,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + err.message, duration: 2000 });
+      this.toast({ message: '删除失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -2643,7 +2655,7 @@ struct Index {
       await this.load();
     } catch (e) {
       const err = e as Error;
-      this.getUIContext().getPromptAction().showToast({ message: '恢复失败：' + err.message, duration: 2000 });
+      this.toast({ message: '恢复失败：' + err.message, duration: 2000 });
     }
     this.slotsBusy = false;
   }
@@ -2752,7 +2764,7 @@ struct Index {
       const current: TimeSlot[] = await store.readSlotsOf(store.currentId);
       for (const s of current) {
         if (s.id !== this.slotEditorSlotId && s.periodIndex === row.periodIndex) {
-          this.getUIContext().getPromptAction().showToast({
+          this.toast({
             message: '第 ' + row.periodIndex + ' 节已经存在了，换个节次号',
             duration: 2000,
           });
@@ -2777,7 +2789,7 @@ struct Index {
       this.slotEditorOpen = false;
       await this.load();
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: '保存失败：' + (e as Error).message,
         duration: 2500,
       });
@@ -3060,7 +3072,7 @@ struct Index {
       await this.load();
       this.slotImportPhase = 'idle';
       this.screen = 'slots';
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: '已导入 ' + slots.length + ' 节作息',
         duration: 2000,
       });
@@ -3078,7 +3090,7 @@ struct Index {
       const store: ScheduleStore = await this.openStore();
       const sourceSlots: TimeSlot[] = await store.readSlotsOf(source.id);
       if (sourceSlots.length === 0) {
-        this.getUIContext().getPromptAction().showToast({
+        this.toast({
           message: '「' + source.name + '」还没有作息可复制',
           duration: 2000,
         });
@@ -3098,12 +3110,12 @@ struct Index {
       }
       await store.replaceSlots(copied);
       await this.load();
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: '已复制 ' + copied.length + ' 节',
         duration: 2000,
       });
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: '复制失败：' + (e as Error).message,
         duration: 2500,
       });
@@ -3112,6 +3124,22 @@ struct Index {
   }
 
   // ---------------------------------------------------------------- 交互
+
+  /**
+   * 统一的轻提示。
+   *
+   * 为什么不用 `getUIContext().getPromptAction()`：那个接口是 **API 18** 才有的，
+   * 用了它就把"应用能装到多老系统上"抬到 18。`promptAction.showToast()` 从 API 9 就有，
+   * 参数形状一样，所以全部调用点都走这一个 helper —— 将来再换实现也只改这里。
+   */
+  private toast(options: ToastOptions): void {
+    try {
+      promptAction.showToast({ message: options.message, duration: options.duration });
+    } catch (e) {
+      // 提示失败不该影响业务（比如页面已经在销毁）
+      console.error('[toast] ' + (e as Error).message);
+    }
+  }
 
   private goToWeek(week: number): void {
     const target: number = WeekSelection.clamp(week, this.totalWeeks);
@@ -3167,7 +3195,7 @@ struct Index {
     const snap: Snapshot | null = this.snapshot;
     const course: Course | null = this.findCourse(courseId);
     if (snap === null || course === null) {
-      this.getUIContext().getPromptAction().showToast({ message: '这门课已经不在课表里了', duration: 1500 });
+      this.toast({ message: '这门课已经不在课表里了', duration: 1500 });
       return;
     }
     const rows: DraftRow[] = [];
@@ -3203,7 +3231,7 @@ struct Index {
   private async saveCoursePayload(payload: CourseDraftPayload): Promise<void> {
     const store: ScheduleStore | null = this.store;
     if (store === null) {
-      this.getUIContext().getPromptAction().showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
+      this.toast({ message: '数据还没就绪，稍后再试', duration: 1500 });
       return;
     }
     // 编辑时保留本面板不编辑的字段（配色/类别/备注）：
@@ -3252,13 +3280,13 @@ struct Index {
           }
         }
       }
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: this.editorCourseId > 0 ? '已更新：' + payload.name : '已添加：' + payload.name,
         duration: 1500,
       });
       this.editorCourseId = 0;
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
+      this.toast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -3273,9 +3301,9 @@ struct Index {
       this.editorOpen = false;
       this.editorCourseId = 0;
       await this.refreshAfterEdit();
-      this.getUIContext().getPromptAction().showToast({ message: '已删除该课程', duration: 1500 });
+      this.toast({ message: '已删除该课程', duration: 1500 });
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
+      this.toast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -3303,7 +3331,7 @@ struct Index {
   private openEventEditorById(eventId: number): void {
     const event: CustomEvent | null = this.findEvent(eventId);
     if (event === null) {
-      this.getUIContext().getPromptAction().showToast({ message: '这条安排已经不在课表里了', duration: 1500 });
+      this.toast({ message: '这条安排已经不在课表里了', duration: 1500 });
       return;
     }
     // 只有钟点、没有节次的安排（老数据）也照常能编辑：节次从 1 起，保存时按选中的节次定位。
@@ -3327,7 +3355,7 @@ struct Index {
   private async saveEventPayload(result: EventDraftResult): Promise<void> {
     const store: ScheduleStore | null = this.store;
     if (store === null) {
-      this.getUIContext().getPromptAction().showToast({ message: '数据还没就绪，稍后再试', duration: 1500 });
+      this.toast({ message: '数据还没就绪，稍后再试', duration: 1500 });
       return;
     }
     try {
@@ -3355,13 +3383,13 @@ struct Index {
       if (!WeekMasks.contains(result.weekMask, this.selectedWeek)) {
         this.goToFirstWeekOf(result.weekMask);
       }
-      this.getUIContext().getPromptAction().showToast({
+      this.toast({
         message: this.eventEditorId > 0 ? '已更新：' + result.title : '已添加：' + result.title,
         duration: 1500,
       });
       this.eventEditorId = 0;
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
+      this.toast({ message: '保存失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -3376,9 +3404,9 @@ struct Index {
       this.eventEditorOpen = false;
       this.eventEditorId = 0;
       await this.refreshAfterEdit();
-      this.getUIContext().getPromptAction().showToast({ message: '已删除该安排', duration: 1500 });
+      this.toast({ message: '已删除该安排', duration: 1500 });
     } catch (e) {
-      this.getUIContext().getPromptAction().showToast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
+      this.toast({ message: '删除失败：' + (e as Error).message, duration: 2500 });
     }
   }
 
@@ -3490,7 +3518,7 @@ struct Index {
       await this.refreshAfterEdit();
       // 开学日变了，"第几周"就变了：直接跳回本周，别停在原来那一页
       this.goToCurrentWeek();
-      this.getUIContext().getPromptAction().showToast({ message: '学期设置已更新', duration: 1500 });
+      this.toast({ message: '学期设置已更新', duration: 1500 });
     } catch (e) {
       this.semesterError = '保存失败：' + (e as Error).message;
     }

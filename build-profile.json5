@@ -4,10 +4,13 @@
     "products": [
       {
         "name": "default",
-        // HarmonyOS 7.0.0 / API 26（本机 SDK: apiVersion 26, platformVersion 26.0.0）
-        // API >= 26.0.0 时 modelVersion 必须 >= 6.0.0，此时版本串用字符串形式
+        // 两个版本号的分工（改之前先读这段）：
+        // - targetSdkVersion：按哪一版系统的行为跑，跟着本机 SDK 走（API 26 / HarmonyOS 7.0）
+        // - compatibleSdkVersion：**最低能装到哪一版系统**。12 = HarmonyOS NEXT 5.0 基线。
+        //   从 26 下探到 12 的代价是只能用 API 12 就存在的接口 —— 唯一可靠的检查方式是
+        //   让 ArkTS 编译器逐条报错，而不是靠人肉记哪个接口是哪版加的。
         "targetSdkVersion": "26.0.0",
-        "compatibleSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "5.0.2(14)",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
           "strictMode": {

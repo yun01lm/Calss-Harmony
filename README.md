@@ -24,7 +24,11 @@
 ## 环境
 
 - DevEco Studio 26.0.0（本机已装：`C:\Program Files\Huawei\DevEco Studio`）
-- HarmonyOS SDK **API 26（platform 26.0.0）**
+- HarmonyOS SDK **API 26（platform 26.0.0）**：`targetSdkVersion 26.0.0`
+- **最低支持 API 14（HarmonyOS NEXT 5.0.2）**：`compatibleSdkVersion "5.0.2(14)"`。
+  这个下限不是拍的，是逐个核对用到的平台接口 `@since` 得到的 —— 卡在 14 的只有一条：
+  `relationalStore.createTransaction()`（@since 14，事务绑定连接，`last_insert_rowid()` 才可靠）。
+  12 需要重写整个 RDB 事务层，换来的只是多支持一个早期版本，不值得。
 - 模拟器：Mate 90 Pro / Mate X7 / MatePad Pro 13 / MateBook Pro（均已部署）
 
 ## 构建
@@ -46,6 +50,17 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`
 
 > 真机安装需要签名：DevEco Studio → `File → Project Structure → Signing Configs` → 勾「自动生成签名」。该操作会把签名材料（`.p12/.cer/.p7b`，在 `%USERPROFILE%\.ohos\config`）的路径写进 `build-profile.json5` —— **属于个人材料，不进仓库**，换机器时重新勾一次即可。
+>
+> 仓库里的 `build-profile.json5` 是 `"signingConfigs": []` 的干净版本；本机那份因为写了签名路径，
+> 被 `git update-index --skip-worktree build-profile.json5` 保护着（改它不会被提交）。
+> **安装前先跑一次体检**，它会在缺签名时提前给出操作步骤，而不是等 `hdc install` 报
+> `9568320 no signature file`：
+>
+> ```powershell
+> npm run check:sign      # 只体检
+> npm run verify:device   # 体检 + 构建
+> ```
+>
 > 注：工程里**不提交** `hvigorw` / `hvigorw.bat` / `hvigor/hvigor-wrapper.js`
 > —— 它们由 DevEco 在首次 Sync 时按你的 IDE 版本生成；手工拷贝 IDE 内部的 launcher 会因缺少 `hvigorw.js` 而失败。
 
