@@ -13,6 +13,15 @@ Android 版用的是自适应图标（adaptive icon）：
 - `AppScope/.../foreground.png` —— 前景层（1024，透明底）
 - `entry/.../startIcon.png`     —— 启动图（144，前景层）
 
+## 谁是"真源"（实测，不是推测）
+打包时 **应用图标只认 `AppScope`**：把 AppScope 的前景临时换成一块绿方块重新构建，
+包里的 `resources/base/media/foreground.png` 立刻变成绿方块；而改 `entry` 下的同名图
+完全不影响包内图标。`entry` 那两份曾经存在的 `background/foreground.png` 其实是死文件，
+已删除，避免"改了一份没效果"。
+
+另外，包内的分层图标会被 hvigor 统一归一到 **512×512**（无论给 288 还是 1024），
+所以尺寸统一在 AppScope 出 1024、由构建去缩，不必自己先缩一遍。
+
 ## 几何（108 用户单位，源自 Android 的 vector）
 ```
 白色板:   x 36..72, y 38..70, 圆角 4
@@ -27,7 +36,6 @@ from PIL import Image, ImageDraw
 import os
 
 STORE_SIZE = 1024
-ENTRY_BG = 288
 START_ICON = 144
 
 BG_COLOR = (224, 122, 95, 255)   # #E07A5F 暖陶土
@@ -94,11 +102,10 @@ def main() -> None:
     store_path = os.path.join(store_dir, "icon-1024.png")
     store_icon.save(store_path, optimize=True)
 
-    # 2) 鸿蒙分层图标
+    # 2) 鸿蒙分层图标：只有 AppScope 这一份是真源（见文件头「谁是"真源"」）
     bg.save(os.path.join(app_media, "background.png"))
     fg.save(os.path.join(app_media, "foreground.png"))
-    bg.resize((ENTRY_BG, ENTRY_BG), Image.LANCZOS).save(os.path.join(entry_media, "background.png"))
-    fg.resize((ENTRY_BG, ENTRY_BG), Image.LANCZOS).save(os.path.join(entry_media, "foreground.png"))
+    # 启动图仍然由 entry 模块提供（包里 startIcon.png 与这里逐字节相同）
     fg.resize((START_ICON, START_ICON), Image.LANCZOS).save(os.path.join(entry_media, "startIcon.png"))
 
     # 3) 本地预览（不入库）：整图 + 缩到 56px 看小尺寸是否还认得出

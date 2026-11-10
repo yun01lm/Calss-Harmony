@@ -27,7 +27,12 @@ entry/.preview/
 *.p12
 *.cer
 *.p7b
-/signing/
+# signing/ 里只留模板；真材料路径与口令（release.local.json）只放本地
+/signing/*
+!/signing/release.example.json
+
+# 发布签名产物
+/dist/
 
 # ---- 含个人信息的本地文件 ----
 /samples/
@@ -41,6 +46,8 @@ Thumbs.db
 # ---- 本地临时文件（截图/日志/脚本）----
 /.tmp/
 /tmp-audit/
+# tools/make-icon.py 的本地预览（只给自己看小尺寸效果）
+/tmp-icon-*.png
 
 # 真实课表 PDF（含姓名）——只用于本地验证，绝不入库
 entry/src/main/resources/rawfile/spike-real*.pdf

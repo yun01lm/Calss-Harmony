@@ -60,6 +60,18 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 > npm run check:sign      # 只体检
 > npm run verify:device   # 体检 + 构建
 > ```
+
+## 上架（应用市场）要换一套签名
+
+自动签名给的是**调试证书 + 调试 Profile**（profile 里 `"type":"debug"`，还带一份 UDID 白名单），
+只能装进开发机，应用市场「上传新版本」不收。上架要另外申请**发布证书 + 发布 Profile**再签一次：
+
+```powershell
+npm run build:release   # release 版，产出 entry-default-unsigned.hap
+npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-release-signed.hap
+```
+
+步骤、材料（`.p12`/`.csr`/`.cer`/`.p7b` 从哪来）、以及校验器断言什么，见 [`docs/SIGNING.md`](docs/SIGNING.md)。
 >
 > 注：工程里**不提交** `hvigorw` / `hvigorw.bat` / `hvigor/hvigor-wrapper.js`
 > —— 它们由 DevEco 在首次 Sync 时按你的 IDE 版本生成；手工拷贝 IDE 内部的 launcher 会因缺少 `hvigorw.js` 而失败。

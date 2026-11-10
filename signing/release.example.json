@@ -1,0 +1,12 @@
+{
+  "//": "拷成 signing/release.local.json 再改（.local.json 已 gitignore，口令不入库）。模板里留空即可，脚本会逐个字段报缺。",
+  "storeFile": "C:\\Users\\HR\\.ohos\\config\\calss-release.p12",
+  "keyAlias": "calss-release",
+  "storePassword": "",
+  "keyPassword": "",
+  "certpath": "C:\\Users\\HR\\.ohos\\config\\calss-release.cer",
+  "profile": "C:\\Users\\HR\\.ohos\\config\\calss-release.p7b",
+  "unsignedHap": "entry/build/default/outputs/default/entry-default-unsigned.hap",
+  "outDir": "dist",
+  "outName": "jiankebiao-release-signed.hap"
+}
