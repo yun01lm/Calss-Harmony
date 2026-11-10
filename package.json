@@ -11,7 +11,9 @@
     "check:sign": "node tools/check-signing.mjs",
     "build": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap --no-daemon",
     "build:release": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap -p buildMode=release --no-daemon",
+    "build:app": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleApp -p buildMode=release --no-daemon",
     "sign:release": "node tools/sign-release.mjs",
+    "sign:release:hap": "node tools/sign-release.mjs --hap",
     "verify:device": "node tools/check-signing.mjs && npm run build"
   },
   "engines": {

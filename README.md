@@ -67,9 +67,12 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 只能装进开发机，应用市场「上传新版本」不收。上架要另外申请**发布证书 + 发布 Profile**再签一次：
 
 ```powershell
-npm run build:release   # release 版，产出 entry-default-unsigned.hap
-npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-release-signed.hap
+npm run build:app       # release 版 App Pack，产出 build/outputs/default/*-unsigned.app
+npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-0.1.0-release.app
 ```
+
+应用市场那个上传框写的是「支持 APP 格式」，要 **`.app`**（App Pack），不是 `.hap`。
+只想 hdc 装到真机自测才用 `npm run build:release` + `npm run sign:release:hap`。
 
 步骤、材料（`.p12`/`.csr`/`.cer`/`.p7b` 从哪来）、以及校验器断言什么，见 [`docs/SIGNING.md`](docs/SIGNING.md)。
 >

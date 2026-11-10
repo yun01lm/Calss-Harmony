@@ -6,7 +6,9 @@
   "keyPassword": "",
   "certpath": "C:\\Users\\HR\\.ohos\\config\\calss-release.cer",
   "profile": "C:\\Users\\HR\\.ohos\\config\\calss-release.p7b",
+  "unsignedApp": "build/outputs/default/Calss-Harmony-default-unsigned.app",
   "unsignedHap": "entry/build/default/outputs/default/entry-default-unsigned.hap",
   "outDir": "dist",
-  "outName": "jiankebiao-release-signed.hap"
+  "outNameApp": "jiankebiao-0.1.0-release.app",
+  "outNameHap": "jiankebiao-0.1.0-release-signed.hap"
 }

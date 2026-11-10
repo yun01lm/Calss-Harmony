@@ -77,20 +77,50 @@ Copy-Item signing\release.example.json signing\release.local.json
 
 ## 3. 出包
 
-```powershell
-# ① release 版（AOT 编译，不带调试信息）—— 产出 entry-default-unsigned.hap
-hvigorw assembleHap -p buildMode=release --no-daemon
+### 3.1 应用市场要的是 `.app`，不是 `.hap`
 
-# ② 换发布材料重签 + 当场校验 —— 产出 dist/jiankebiao-release-signed.hap
-node tools/sign-release.mjs
+应用市场「上传新版本」那个框写的是「支持 APP 格式」——要 **App Pack（`.app`）**。
+两者的关系：`.app` 是个 zip 容器，里面装着各模块的 `entry-default.hap` + `pack.info` + `pac.json`，
+**签名对象是整个 `.app`**；容器里那个 HAP 是未签名的（实测 DevEco 自己产出的 `-signed.app`
+里，`entry-default.hap` 也没有签名块，`verify-app` 报 `No Hap Signing Block`）。这是官方的形态，
+不是我们漏签。
+
+```powershell
+# ① release 版（AOT 编译，不带调试信息）—— 产出 build/outputs/default/*-unsigned.app
+hvigorw assembleApp -p buildMode=release --no-daemon
+
+# ② 换发布材料重签 + 当场校验 —— 产出 dist/jiankebiao-0.1.0-release.app
+npm run sign:release
 ```
 
-`tools/sign-release.mjs` 调的正是 hvigor 的 `SignHap` 任务内部用的同一个
-`hap-sign-tool.jar sign-app`，只是材料换成发布材料；签名完立刻回读包里的 profile 断言三件事：
+只想 hdc 装到真机自测（走单 HAP）时：
+
+```powershell
+hvigorw assembleHap -p buildMode=release --no-daemon   # 产出 entry-default-unsigned.hap
+npm run sign:release:hap                               # 产出 dist/jiankebiao-0.1.0-release-signed.hap
+```
+
+### 3.2 为什么不在 `build-profile.json5` 里配 release 签名
+
+试过了，hvigor 直接拒：
+
+```
+00303116 Configuration Error
+The length of the storePassword or keyPassword field in the signature configuration is less than 32.
+```
+
+它只收 DevEco 用本机密钥加密过的口令串，明文塞进去一律当"太短"。
+所以要么在图形界面里填一次让它加密（见 §5），要么像脚本这样直接调官方签名工具，
+两条路签出来的包在应用市场看来没有区别。
+
+### 3.3 脚本断言什么
+
+`tools/sign-release.mjs` 调的正是 hvigor 的 `SignHap` / `SignApp` 任务内部用的同一个
+`hap-sign-tool.jar sign-app`，只是材料换成发布材料；签名完立刻回读包里的 profile 断言：
 
 1. `profile.type === "release"`
 2. profile 里的 `bundle-name` == `AppScope/app.json5` 的 `bundleName`
-3. `verify-app` 的证书链与摘要校验通过
+3. `verify-app` 的证书链与摘要校验通过（`.app` 还要确认里面确实有 `entry-default.hap` 与 `pack.info`）
 
 任何一条不满足就**删掉产物**并退出码 1 —— 宁可没有包，也不给一个"看着像能上传"的包。
 
@@ -104,7 +134,8 @@ node tools/sign-release.mjs
 
 不想用脚本，等价路径：`File → Project Structure → Signing Configs` → 取消勾选
 「Automatically generate signature」→ 手动填 `.p12` / `.cer` / `.p7b` / 口令 → Apply。
-之后 `Build → Build Hap(s)` 选 release 就出发布签名包。两条路签出来的包在应用市场看来没有区别。
+之后 `Build → Build App(s)` 选 release，DevEco 会自己把 HAP 和 `.app` 都签好
+（它会用本机密钥把口令加密写回 `build-profile.json5`，所以 GUI 这条路没有明文口令的问题）。
 
 ## 6. 常见报错
 

@@ -368,6 +368,30 @@ verify-app success
 > 这一步只证明"包本身合格、签名类型正确"。**装上去能不能跑**还没验（真机当时未连），
 > 应用市场的合法性/自检结果也要等上传后才知道。
 
+### 6.13 应用市场只收 `.app`，而且 hvigor 不收明文口令
+
+「上传新版本」那个框写的是「支持 APP 格式，大小在 4 GB 以内」——要 **App Pack（`.app`）**。
+两件事是实测出来的：
+
+1. **`.app` 里的 HAP 是未签名的**。用 `tar` 把 DevEco 自己产出的 `*-signed.app` 拆开，
+   里面的 `entry-default.hap` 用 `verify-app` 读会报 `No Hap Signing Block before ZIP Central Directory`
+   —— 签名对象是整个 zip（`sign-app -inForm zip`），容器内的 HAP 不需要单独签名块。所以不要
+   看到"内部 HAP 没签名"就以为出包失败。
+2. **`build-profile.json5` 里塞不进明文口令**。手写一个 release 的 signingConfig 后构建直接拒：
+   ```
+   00303116 Configuration Error
+   The length of the storePassword or keyPassword field in the signature configuration is less than 32.
+   ```
+   hvigor 只认 DevEco 用本机密钥加密过的串。所以要么走 GUI 让它加密，要么直接调
+   `hap-sign-tool.jar sign-app`（`tools/sign-release.mjs` 走的就是这条路）。
+
+本次 `.app` 实包：`dist/jiankebiao-0.1.0-release.app`，0.95 MB，
+`sign-app -inForm zip` 签完后 `verify-app` 回读：
+`type=release`、`bundle-name=com.calss.jiankebiao`、`app-distribution-type=app_gallery`、
+无 `device-ids`、证书链 `根 CA G2 → 开发关系 CA G2 → …Release`、`Digest verify result: true`；
+容器内 `entry-default.hap` 的 `module.json` 为 `buildMode release` / `debug false` /
+`versionCode 1000000` / `minAPIVersion 50002014`。
+
 ## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。
