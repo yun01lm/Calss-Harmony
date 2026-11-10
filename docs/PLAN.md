@@ -68,7 +68,7 @@ node tools/check-architecture.mjs      # 依赖方向 + .ts 扩展名
 | P6 资源释放/去重/删死代码 | Minutes.of 等 | — | 待验（只有开发者入口的 spike 走得到） |
 | P7 校对页留白/窄格/箭头 | CellLayout 3 条 | 箭头已见效果；校对页与窄格走不到 | 待验 |
 | P8 签名体检 + API 14 | 脚本自检 | 装得上、跑得起来 | 待验（同一台机器，签名相同） |
-| P9 上架包（发布签名） | `sign-release.mjs --verify` 负例：调试包被打回 | — | **待验：等应用市场签发发布证书 + 发布 Profile**（见 `docs/SIGNING.md`） |
+| P9 上架包（发布签名） | `sign-release.mjs` 断言通过（release/bundle/摘要） | — | 待验：包已合格、签名类型正确；**装机运行与应用市场自检未验** |
 
 > P9 的来源：自动签名签出来的包，profile 里是 `"type":"debug"`、证书 CN 结尾是 `,Development`、
 > 还带一份 `debug-info.device-ids` 白名单 —— 用 `hap-sign-tool verify-app` 回读包内签名实测得到。

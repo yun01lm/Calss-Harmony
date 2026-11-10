@@ -333,6 +333,41 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 真实导出文件放在 `tools/fixtures/`（**含学号姓名，不入库**），存在时跑完整数字断言
 （31 个非停课块 → 12 门课、11 节作息），不存在时 skip。
 
+### 6.12 「签名已经做过了」不等于「能上架」
+
+DevEco 的自动签名签出来的是**调试包**，应用市场不收。判别方法不是看界面勾没勾，
+而是用 SDK 的 `hap-sign-tool.jar verify-app` 回读**包内真实生效**的 profile：
+
+| 字段 | 自动签名（调试） | 应用市场签发（发布） |
+|---|---|---|
+| `type` | `debug` | `release` |
+| `bundle-info` 里的证书 | `…,Development` | `…,Release` |
+| `debug-info.device-ids` | 一台设备的 UDID 白名单 | **没有** |
+| `app-distribution-type` | 无 | `app_gallery` |
+
+`tools/sign-release.mjs` 就是干这件事的：用发布材料调 `sign-app` 重签，再用
+`verify-app` 回读并断言，任一条不满足就删产物、退出码 1（不会给你一个"看着像能上传"的包）。
+
+本次实包验证（2026-11-10，`dist/jiankebiao-release-signed.hap`，2.30 MB）：
+
+```
+Find Hap Signing Block success, version: 3, block count: 3
+profile type is: release
+Subject: CN="李浩阳(2069735078807744833)\,Release", OU=2069735078807744833, O=李浩阳, C=CN
+Validity: 2026-11-10 20:20:24 ~ 2029-11-10 20:20:24
+Subject: CN=Huawei CBG Developer Relations CA G2, …      （中间 CA）
+Subject: CN=Huawei CBG Root CA G2, …                     （根）
+Digest verify result: true, DigestAlgorithm: SHA-256
+verify-app success
+```
+
+包内 `module.json`：`bundleName com.calss.jiankebiao` / `versionName 0.1.0` /
+`versionCode 1000000` / `debug false` / `buildMode release` / `minAPIVersion 50002014`，
+且解包后**没有** `*.map`、`*.ts` 之类调试残留。
+
+> 这一步只证明"包本身合格、签名类型正确"。**装上去能不能跑**还没验（真机当时未连），
+> 应用市场的合法性/自检结果也要等上传后才知道。
+
 ## 7. 遗留风险
 
 1. **冷启动只在模拟器上量过**，真机未测（模拟器是软件渲染，数字偏悲观）。
