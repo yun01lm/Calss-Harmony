@@ -1804,6 +1804,17 @@ struct Index {
             .onClick(() => {
               this.runTableImportFromRawSample();
             })
+          // 只存在于 debug 包：导入「演示课表」（满课的一周，全合成数据），
+          // 用于给应用市场拍「应用介绍截图」——真实课表含姓名学号，不能拿来截图。
+          Button(this.importStarting ? '导入中…' : '用演示课表跑「导入 → 教务表格」（截图用）')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#7FA98B')
+            .enabled(!this.importStarting && !this.importOpen)
+            .onClick(() => {
+              this.runTableImportFromRawSample('demo-timetable.html', '演示课表');
+            })
           ForEach(this.spikeLines, (line: SpikeLine) => {
             Row({ space: 4 }) {
               Text(line.ok ? '✓' : '✗')
@@ -3180,7 +3191,8 @@ ull（四个字符）。
    * 和 PDF 那条一样，是为了绕开"系统文件选择器没法用命令行驱动"。
    * 内置样张是 	ests/fixtures/jwxt-sample.html（姓名/课程全假），真实导出文件不能进仓库。
    */
-  private async runTableImportFromRawSample(): Promise<void> {
+  private async runTableImportFromRawSample(rawName: string = 'jwxt-sample.html',
+    sourceLabel: string = '内置样张'): Promise<void> {
     if (this.importStarting) {
       return;
     }
@@ -3195,7 +3207,7 @@ ull（四个字符）。
     this.importBusy = true;
     this.importError = '';
     this.importStage = '解析表格…';
-    this.importFileName = 'jwxt-sample.html（内置样张）';
+    this.importFileName = rawName + '（' + sourceLabel + '）';
     this.importFormat = '';
     this.importCount = 0;
     this.importPreview = [];
@@ -3203,7 +3215,7 @@ ull（四个字符）。
     this.importCourses = [];
     this.importSlots = [];
     try {
-      const data: Uint8Array = await ability.resourceManager.getRawFileContent('jwxt-sample.html');
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent(rawName);
       const decoded = TableFile.decode(data);
       if (!TableFile.looksLikeHtml(decoded.text)) {
         throw new Error('内置样张不是 HTML 表格');
@@ -3216,7 +3228,7 @@ ull（四个字符）。
       }
       this.feedParsedResult(
         { courses: parsed.courses, format: JwxtTableParser.FORMAT, warnings: warnings },
-        '表格（内置样张 · ' + decoded.encoding + '）'
+        '表格（' + sourceLabel + ' · ' + decoded.encoding + '）'
       );
     } catch (e) {
       this.importBusy = false;

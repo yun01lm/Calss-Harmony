@@ -75,6 +75,8 @@ npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jia
 只想 hdc 装到真机自测才用 `npm run build:release` + `npm run sign:release:hap`。
 
 步骤、材料（`.p12`/`.csr`/`.cer`/`.p7b` 从哪来）、以及校验器断言什么，见 [`docs/SIGNING.md`](docs/SIGNING.md)。
+
+上架要填的图标、截图、一句话简介与应用介绍都在 [`store/README.md`](store/README.md)。
 >
 > 注：工程里**不提交** `hvigorw` / `hvigorw.bat` / `hvigor/hvigor-wrapper.js`
 > —— 它们由 DevEco 在首次 Sync 时按你的 IDE 版本生成；手工拷贝 IDE 内部的 launcher 会因缺少 `hvigorw.js` 而失败。

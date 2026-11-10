@@ -1,0 +1,169 @@
+<!--
+  演示课表（截图/宣传用）：结构与真实教务导出完全一致（.xls 其实是 HTML 表格），
+  但**课程、教师、教室、学号全是编的**，不涉及任何真实个人信息。
+
+  用途：应用市场「应用介绍截图」需要一个像样的周课表。真实课表含姓名学号不能入库，
+  所以这里按真实格式造一份满课的一周（12 门课、10 节作息、含单双周与半学期课）。
+  入口在开发者面板：连点标题 5 次 → 「用演示课表跑「导入 → 教务表格」」。
+-->
+<table style="width: 100%;">
+  <tr><td colspan="8" style="font-size: 2em;font-weight:bold;text-align: center;">学生课表</td></tr>
+  <tr><td colspan="8">学号:00000000000&nbsp;&nbsp; 学生姓名:示例同学&nbsp;&nbsp;所属班级: 2024示例工程&nbsp;&nbsp;总学分:28</td></tr>
+</table>
+<table width="100%" id="manualArrangeCourseTable" class="gridtable" border="1">
+  <thead>
+    <tr>
+      <th>节次/周次</th><th><font size="2px">星期一</font></th><th><font size="2px">星期二</font></th>
+      <th><font size="2px">星期三</font></th><th><font size="2px">星期四</font></th>
+      <th><font size="2px">星期五</font></th><th><font size="2px">星期六</font></th><th><font size="2px">星期日</font></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第一节</font></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        高等数学A        (08000.000000001P.01)
+        (王立)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  A301-0201(本部))
+      </td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        大学物理        (08000.000000002P.01)
+        (周敏)
+        <br style="mso-data-placement: same-cell">
+        ([1-14]  A102-0305(本部))
+      </td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第二节</font></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第三节</font></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        概率论        (08000.000000003P.01)
+        (郑凯)
+        <br style="mso-data-placement: same-cell">
+        ([9-16]  A205-0205(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        程序设计        (08000.000000004P.01)
+        (赵鹏)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  实验楼B402(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        大学英语        (08000.000000005P.01)
+        (李静)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  外语楼305(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        思想道德        (08000.000000006P.01)
+        (孙倩)
+        <br style="mso-data-placement: same-cell">
+        ([1-12]  文科楼102(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        电路分析        (08000.000000007P.01)
+        (吴涛)
+        <br style="mso-data-placement: same-cell">
+        ([1-10]  A303-0410(本部))
+      </td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第四节</font></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第五节</font></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        大学英语        (08000.000000005P.01)
+        (李静)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  外语楼305(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        线性代数        (08000.000000009P.01)
+        (陈曦)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  A102-0108(本部))
+      </td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        物理实验        (08000.000000010P.01)
+        (周敏)
+        <br style="mso-data-placement: same-cell">
+        ([2-16]双  物理实验中心(本部))
+      </td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        体育        (08000.000000011P.01)
+        (黄磊)
+        <br style="mso-data-placement: same-cell">
+        ([1-16]  体育馆(本部))
+      </td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第六节</font></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第七节</font></td>
+      <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第八节</font></td>
+      <td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第九节</font></td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td rowspan="2" style="backGround-Color:#ffffff">
+        中国传统建筑        (08000.000000012P.01)
+        (林越)
+        <br style="mso-data-placement: same-cell">
+        ([3-16]  文科楼301(本部))
+      </td>
+      <td style="backGround-Color:#ffffff"></td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td style="background-color:#EEFF00"><font size="2px"> 第十节</font></td>
+      <td></td><td></td><td></td><td></td><td></td><td></td>
+    </tr>
+    <tr><td style="background-color:#EEFF00"><font size="2px"> 作息</font></td><td colspan="7">各校区作息时间说明:</td></tr>
+    <tr>
+      <td>本部</td>
+      <td>第一节     08:00~<br>    08:45</td>
+      <td>第二节     08:55~<br>    09:40</td>
+      <td>第三节     10:00~<br>    10:45</td>
+      <td>第四节     10:55~<br>    11:40</td>
+      <td>第五节     14:00~<br>    14:45</td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td>本部</td>
+      <td>第六节     14:55~<br>    15:40</td>
+      <td>第七节     16:00~<br>    16:45</td>
+      <td>第八节     16:55~<br>    17:40</td>
+      <td>第九节     19:00~<br>    19:45</td>
+      <td>第十节     19:55~<br>    20:40</td>
+      <td></td><td></td>
+    </tr>
+  </tbody>
+</table>
