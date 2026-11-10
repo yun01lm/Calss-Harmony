@@ -1,105 +1,112 @@
-"""生成「简课表」的应用图标（分层图标 background / foreground + 启动图 startIcon）。
+"""生成「简课表」图标：与应用市场一致、且与 Android 版**同一份几何**。
 
-设计：直接把界面里的**课表网格**搬到图标上 —— 4 列 × 3 行的白色圆角块，
-其中三块跨行/单格用应用主色（课程块的橙、蓝、绿）。理由：
+## 为什么重写
+Android 版用的是自适应图标（adaptive icon）：
+- 背景层：纯色 `#E07A5F`
+- 前景层：白色圆角「课表板」+ 陶土色格线（108×108 视口里画好，启动器只显示中间 72×72）
 
-- 一屏 20 个图标里，颜色少、形状大才认得出。这里只有"白格 + 3 个彩块"两层次；
-- 它和应用内周视图是同一个视觉语言（彩色色块落在网格里），不会"图标和界面不像一家人"；
-- 不用文字：中文字在 48px 下必然糊。
+应用市场要的是**直角正方形**（216 或 1024，PNG/WEBP ≤3MB），由它自己套圆角蒙层；
+同时明确要求"上传的图标必须与软件包里的图标一致"。所以两边必须来自同一份画法：
 
-底色用暖色渐变（#FFE4D0 → #FFCEB8），白格子的对比度在小尺寸下才够。
-输出：AppScope 1024×1024；entry 288×288；startIcon 144×144（透明底）。
+- `store/icon-1024.png`         —— 上传用直角图（背景 + 前景合成，按可见窗口裁剪）
+- `AppScope/.../background.png` —— 鸿蒙分层图标的背景层（1024，纯色）
+- `AppScope/.../foreground.png` —— 前景层（1024，透明底）
+- `entry/.../startIcon.png`     —— 启动图（144，前景层）
+
+## 几何（108 用户单位，源自 Android 的 vector）
+```
+白色板:   x 36..72, y 38..70, 圆角 4
+横格线:   y 50..53 / 59..62, x 36..72
+竖格线:   x 48..51 / 57..60, y 38..70
+```
+自适应图标的可见区域是中间 **72×72**（18..90），所以这里把 18..90 映射到整张 1024 ——
+这样应用市场里的直角图、以及手机上被套了蒙层的显示，看起来和 Android 一致。
 """
 
 from PIL import Image, ImageDraw
 import os
 
-SIZE = 1024
-BG_TOP = (255, 228, 208)
-BG_BOTTOM = (255, 206, 184)
-TILE = (255, 255, 255, 235)
-ACCENT_A = (222, 107, 78, 255)    # #DE6B4E（课程块橙）
-ACCENT_B = (95, 132, 184, 255)    # #5F84B8（蓝）
-ACCENT_C = (111, 160, 127, 255)   # #6FA07F（绿）
+STORE_SIZE = 1024
+ENTRY_BG = 288
+START_ICON = 144
 
-CELL = 150
-GAP = 18
-RADIUS = 38
+BG_COLOR = (224, 122, 95, 255)   # #E07A5F 暖陶土
+BOARD_COLOR = (255, 255, 255, 255)
+
+# 自适应图标的可见窗口（108 视口里的 18..90）
+VIEW_MIN = 18.0
+VIEW_SPAN = 72.0
 
 
-def background(size: int) -> Image.Image:
-    img = Image.new("RGBA", (size, size), BG_TOP + (255,))
-    d = ImageDraw.Draw(img)
-    for y in range(size):
-        t = y / (size - 1)
-        d.line(
-            [(0, y), (size, y)],
-            fill=(
-                round(BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * t),
-                round(BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * t),
-                round(BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * t),
-                255,
-            ),
-        )
-    return img
+def _px(u: float, size: int) -> int:
+    """用户单位（108 视口）的**坐标** → 像素坐标（0..size）。
+
+    必须取整：Pillow 的 rounded_rectangle 在大圆角 + 浮点时会在算拐角包围盒时报
+    "x1 must be greater than or equal to x0"。取整后误差 < 1px，看不出来。
+    """
+    return int(round((u - VIEW_MIN) * (size / VIEW_SPAN)))
+
+
+def _len(u: float, size: int) -> int:
+    """用户单位的**长度**（圆角半径、线宽）→ 像素。
+
+    不能复用 _px：那会把坐标原点（18）也减掉，_px(4, 1024) 得到负数，
+    传进 radius= 直接炸（实测踩过）。
+    """
+    return max(1, int(round(u * (size / VIEW_SPAN))))
 
 
 def foreground(size: int) -> Image.Image:
-    """4 列 × 3 行；其中 1 块跨两行（橙）、1 块跨两行（蓝）、1 块单格（绿）。"""
+    """前景层：白色课表板 + 陶土色格线（透明底）"""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    scale = size / 1024.0
-    cell = CELL * scale
-    gap = GAP * scale
-    rows, cols = 3, 4
-    grid_w = cols * cell + (cols - 1) * gap
-    grid_h = rows * cell + (rows - 1) * gap
-    x0 = (size - grid_w) / 2
-    y0 = (size - grid_h) / 2
-    radius = RADIUS * scale
+    def box(x0: float, y0: float, x1: float, y1: float):
+        return [_px(x0, size), _px(y0, size), _px(x1, size), _px(y1, size)]
 
-    def box(c: int, r: int, span: int = 1):
-        x = x0 + c * (cell + gap)
-        y = y0 + r * (cell + gap)
-        return [x, y, x + cell, y + cell + (span - 1) * (cell + gap)]
-
-    accent = {(1, 0): ACCENT_A, (2, 1): ACCENT_B, (3, 2): ACCENT_C}
-    for r in range(rows):
-        for c in range(cols):
-            # 被跨行块覆盖的格子不画（(c, r) 自身是起点，或上一行是起点）
-            if (c, r) in accent or (c, r - 1) in accent:
-                continue
-            d.rounded_rectangle(box(c, r), radius=radius, fill=TILE)
-
-    d.rounded_rectangle(box(1, 0, 2), radius=radius, fill=ACCENT_A)
-    d.rounded_rectangle(box(2, 1, 2), radius=radius, fill=ACCENT_B)
-    d.rounded_rectangle(box(3, 2), radius=radius, fill=ACCENT_C)
+    # 白色圆角板
+    d.rounded_rectangle(box(36, 38, 72, 70), radius=_len(4, size), fill=BOARD_COLOR)
+    # 格线（用背景色"刻"出来，与 Android 的 vector 一致）
+    d.rectangle(box(36, 50, 72, 53), fill=BG_COLOR)   # 横 1
+    d.rectangle(box(36, 59, 72, 62), fill=BG_COLOR)   # 横 2
+    d.rectangle(box(48, 38, 51, 70), fill=BG_COLOR)   # 竖 1
+    d.rectangle(box(57, 38, 60, 70), fill=BG_COLOR)   # 竖 2
     return img
+
+
+def background(size: int) -> Image.Image:
+    """背景层：纯色（应用市场与启动器都会裁切/套蒙层，所以给满幅）"""
+    return Image.new("RGBA", (size, size), BG_COLOR)
 
 
 def main() -> None:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     app_media = os.path.join(root, "AppScope", "resources", "base", "media")
     entry_media = os.path.join(root, "entry", "src", "main", "resources", "base", "media")
+    store_dir = os.path.join(root, "store")
+    os.makedirs(store_dir, exist_ok=True)
 
-    bg = background(SIZE)
-    fg = foreground(SIZE)
+    bg = background(STORE_SIZE)
+    fg = foreground(STORE_SIZE)
 
+    # 1) 应用市场：背景 + 前景合成的直角图
+    store_icon = Image.alpha_composite(bg, fg).convert("RGB")
+    store_path = os.path.join(store_dir, "icon-1024.png")
+    store_icon.save(store_path, optimize=True)
+
+    # 2) 鸿蒙分层图标
     bg.save(os.path.join(app_media, "background.png"))
     fg.save(os.path.join(app_media, "foreground.png"))
+    bg.resize((ENTRY_BG, ENTRY_BG), Image.LANCZOS).save(os.path.join(entry_media, "background.png"))
+    fg.resize((ENTRY_BG, ENTRY_BG), Image.LANCZOS).save(os.path.join(entry_media, "foreground.png"))
+    fg.resize((START_ICON, START_ICON), Image.LANCZOS).save(os.path.join(entry_media, "startIcon.png"))
 
-    bg.resize((288, 288), Image.LANCZOS).save(os.path.join(entry_media, "background.png"))
-    fg.resize((288, 288), Image.LANCZOS).save(os.path.join(entry_media, "foreground.png"))
-    fg.resize((144, 144), Image.LANCZOS).save(os.path.join(entry_media, "startIcon.png"))
-
-    # 本地预览（不参与构建）：整图 + 56px 缩小图，用来看小尺寸下还认不认得出
-    preview = Image.alpha_composite(bg, fg).convert("RGB")
-    preview.save(os.path.join(root, "tmp-icon-preview.png"))
-    preview.resize((56, 56), Image.LANCZOS).resize((224, 224), Image.NEAREST).save(
+    # 3) 本地预览（不入库）：整图 + 缩到 56px 看小尺寸是否还认得出
+    store_icon.save(os.path.join(root, "tmp-icon-preview.png"))
+    store_icon.resize((56, 56), Image.LANCZOS).resize((224, 224), Image.NEAREST).save(
         os.path.join(root, "tmp-icon-56.png")
     )
-    print("icons written:", bg.size, fg.size)
+    print("store:", store_path, os.path.getsize(store_path), "bytes")
 
 
 if __name__ == "__main__":
