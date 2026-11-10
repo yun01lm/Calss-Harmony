@@ -73,7 +73,7 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 | 检查点 | 结果 |
 |---|---|
 | `entry/src/main/module.json5` 的 `requestPermissions` | **不存在该字段**（全文没有权限声明） |
-| 设备侧 `bm dump -n com.calss.schedule.harmony` | `reqPermissions: []`、`reqPermissionStates: []`、`permissions: []` |
+| 设备侧 `bm dump -n com.calss.jiankebiao` | `reqPermissions: []`、`reqPermissionStates: []`、`permissions: []` |
 | 文件选择 | 走系统 `DocumentViewPicker`，**不需要**任何读存储权限 |
 
 即：与 Android 版一样是**零权限**应用。
