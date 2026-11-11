@@ -89,7 +89,7 @@ Copy-Item signing\release.example.json signing\release.local.json
 # ① release 版（AOT 编译，不带调试信息）—— 产出 build/outputs/default/*-unsigned.app
 hvigorw assembleApp -p buildMode=release --no-daemon
 
-# ② 换发布材料重签 + 当场校验 —— 产出 dist/jiankebiao-0.1.0-release.app
+# ② 换发布材料重签 + 当场校验 —— 产出 dist/jiankebiao-0.1.1-release.app
 npm run sign:release
 ```
 
@@ -97,7 +97,7 @@ npm run sign:release
 
 ```powershell
 hvigorw assembleHap -p buildMode=release --no-daemon   # 产出 entry-default-unsigned.hap
-npm run sign:release:hap                               # 产出 dist/jiankebiao-0.1.0-release-signed.hap
+npm run sign:release:hap                               # 产出 dist/jiankebiao-0.1.1-release-signed.hap
 ```
 
 ### 3.2 为什么不在 `build-profile.json5` 里配 release 签名
@@ -127,7 +127,7 @@ The length of the storePassword or keyPassword field in the signature configurat
 ## 4. 版本号
 
 - 上架的 `versionCode` 必须**大于线上已有版本**，改 `AppScope/app.json5`。
-- 现在：`versionCode 1000000` / `versionName "0.1.0"`。
+- 现在：`versionCode 1000001` / `versionName "0.1.1"`。
 - `pack.info` 里的版本号由构建写死，签名后脚本会把它打印出来核对。
 
 ## 5. 用 DevEco 图形界面也行

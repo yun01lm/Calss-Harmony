@@ -20,6 +20,7 @@
 | 3c | 自定义安排：点空白格选「自定义安排」新建 / 点色块编辑·删除（标题、备注、星期、起止节、周次）—— **270 断言 + 实机建·改·删·重启留存** | ✅ |
 | 3d | 作息：编辑（节次号/分组/起止）、加一节、从其他课表复制；**导入作息**三条通道（图片 OCR / 粘贴文本 / PDF）→ 校对页 → 整表替换 —— **295 断言 + 实机（OCR 识别待真机）** | ✅ |
 | 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`）；**真机 Pura 70 / HarmonyOS 7.0 实测**：冷启动 381 ms（release）、图片 OCR 跑通 | ✅ |
+| 5 | 上架：发布签名 `.app`、图标 / 9:16 截图 / 隐私政策、隐私声明表单；**上架自检 4 条 UX 整改**（字号 ≥8fp、页面转场淡入淡出 300 ms、滑动边界回弹）—— **346 断言** | ✅ 材料与整改完成（0.1.1）；自检复测在 AGC 服务端，真机仍待连 |
 
 ## 环境
 
@@ -60,6 +61,10 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 > npm run check:sign      # 只体检
 > npm run verify:device   # 体检 + 构建
 > ```
+>
+> 改了界面还要跑 **UI 规范守卫**：`npm run check:ui` 会扫全部 `.ets`，出现小于 8fp 的字号
+> 直接失败（这是应用市场「上架自检」判过"不通过"的那条硬指标，见 `docs/ACCEPTANCE.md` §6.14）。
+> `npm run check` = 架构守卫 + UI 守卫。
 
 ## 上架（应用市场）要换一套签名
 
@@ -68,7 +73,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 
 ```powershell
 npm run build:app       # release 版 App Pack，产出 build/outputs/default/*-unsigned.app
-npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-0.1.0-release.app
+npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-0.1.1-release.app
 ```
 
 应用市场那个上传框写的是「支持 APP 格式」，要 **`.app`**（App Pack），不是 `.hap`。

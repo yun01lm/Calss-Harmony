@@ -109,3 +109,48 @@ test('宽度够时不走窄格分支（回归：正常格子排版不变）', ()
   const atThreshold = CellLayout.cellLines(64, 1, CellLayout.NARROW_WIDTH);
   assert.deepEqual(atThreshold, byDefault);
 });
+
+// ---------------------------------------------------------------- 上架自检「字体」红线
+
+/**
+ * 应用市场「上架自检」的 UX 项有一句硬规定：
+ * 「文本字号不小于 12 fp（推荐），最小不得小于 8 fp（**必须**）」。
+ *
+ * 2026-11 第一次自检就栽在这里：节次列的钟点小字写的是 `fontSize(7)`，
+ * 自检判「不通过」，包直接被卡住。所以把字号常量当契约钉在测试里 ——
+ * 谁再为了"塞得下"往下调，`npm test` 先红。
+ */
+test('字号不低于上架自检的 8fp 硬下限', () => {
+  assert.equal(CellLayout.MIN_FONT_SIZE, 8, 'MIN_FONT_SIZE 就是自检的"必须"档，别改');
+
+  assert.ok(
+    CellLayout.GUTTER_TIME_FONT_SIZE >= CellLayout.MIN_FONT_SIZE,
+    `节次列钟点小字 ${CellLayout.GUTTER_TIME_FONT_SIZE}fp 小于 ${CellLayout.MIN_FONT_SIZE}fp（曾因 7fp 被判不通过）`,
+  );
+  assert.ok(
+    CellLayout.NARROW_FONT_SIZE >= CellLayout.MIN_FONT_SIZE,
+    `窄格字号 ${CellLayout.NARROW_FONT_SIZE}fp 小于 ${CellLayout.MIN_FONT_SIZE}fp`,
+  );
+  // 行距必须比字号大，否则汉字上下会切边（7fp/8 行距就是这种写法）
+  assert.ok(
+    CellLayout.GUTTER_TIME_LINE_HEIGHT > CellLayout.GUTTER_TIME_FONT_SIZE,
+    '钟点小字的行距要大于字号',
+  );
+});
+
+test('任何格子算出来的课名字号都不低于 8fp', () => {
+  const heights = [36, 56, 64, 100, 128, 200];
+  const widths = [0, 22, 30, 40, 46, 90];
+  const scales = [0.85, 1, 1.3, 2];
+  for (const h of heights) {
+    for (const w of widths) {
+      for (const s of scales) {
+        const lines = CellLayout.cellLines(h, s, w);
+        assert.ok(
+          lines.nameFontSize >= CellLayout.MIN_FONT_SIZE,
+          `cellLines(h=${h}, scale=${s}, w=${w}) 给出 ${lines.nameFontSize}fp`,
+        );
+      }
+    }
+  }
+});

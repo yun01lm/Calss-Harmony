@@ -82,8 +82,9 @@ pdf.js 占了 68% —— 这是「PDF 导入」这个功能换来的，**不是�
 
 | 项 | 结果 |
 |---|---|
-| Node 断言 | **295 条 / 19 套**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK） |
+| Node 断言 | **346 条 / 23 个文件**（`node --test "tests/*.test.ts"`，不需要鸿蒙 SDK；345 通过 + 1 跳过 —— 跳过的那条要有真机 OCR 后端才跑） |
 | 架构守卫 | `logic/`、`data/` 零平台依赖、相对 import 带 `.ts`、不跨层（`node tools/check-architecture.mjs`，见第 8 节） |
+| UI 规范守卫 | 无小于 8fp 的字号（`node tools/check-ui.mjs`，见第 9 节；这一条是 2026-11 上架自检判"不通过"后补的） |
 | ArkTS 构建 | `BUILD SUCCESSFUL`（debug 与 release 都验过；**两种构建都装到真机 Pura 70 跑过**，release 的签名 HAP 2.43 MB / 未签名 2.39 MB） |
 | CI | GitHub Actions：每次 push / PR 跑全部断言 + 架构守卫脚本 |
 
@@ -365,8 +366,9 @@ verify-app success
 `versionCode 1000000` / `debug false` / `buildMode release` / `minAPIVersion 50002014`，
 且解包后**没有** `*.map`、`*.ts` 之类调试残留。
 
-> 这一步只证明"包本身合格、签名类型正确"。**装上去能不能跑**还没验（真机当时未连），
-> 应用市场的合法性/自检结果也要等上传后才知道。
+> 这一步只证明"包本身合格、签名类型正确"。**装上去能不能跑**当时没验（真机未连）；
+> 2026-11-11 已在模拟器上补验（见 §6.14：卸载调试包后发布包能装、能启动）。
+> 应用市场的合法性/自检结果仍以 AGC 服务端为准。
 
 ### 6.13 应用市场只收 `.app`，而且 hvigor 不收明文口令
 
@@ -385,12 +387,85 @@ verify-app success
    hvigor 只认 DevEco 用本机密钥加密过的串。所以要么走 GUI 让它加密，要么直接调
    `hap-sign-tool.jar sign-app`（`tools/sign-release.mjs` 走的就是这条路）。
 
-本次 `.app` 实包：`dist/jiankebiao-0.1.0-release.app`，0.95 MB，
+本次 `.app` 实包（0.1.0 当时是 `dist/jiankebiao-0.1.0-release.app`，0.95 MB；
+0.1.1 重出后为 `dist/jiankebiao-0.1.1-release.app`，996,818 B，
+sha256 `5be2fe8550beabf0d4b01102e1adaf85f20cf1caee5b78895c551ab274d4a057`），
 `sign-app -inForm zip` 签完后 `verify-app` 回读：
 `type=release`、`bundle-name=com.calss.jiankebiao`、`app-distribution-type=app_gallery`、
 无 `device-ids`、证书链 `根 CA G2 → 开发关系 CA G2 → …Release`、`Digest verify result: true`；
 容器内 `entry-default.hap` 的 `module.json` 为 `buildMode release` / `debug false` /
-`versionCode 1000000` / `minAPIVersion 50002014`。
+`versionCode 1000001` / `minAPIVersion 50002014`。
+
+### 6.14 上架自检报了 4 条 UX：1 条「不通过」、3 条「警告」
+
+包 0.1.0 / 1000000 传进 AGC 跑「上架自检」，UX 维度回来这 4 条（原文照抄）：
+
+| 维度 | 检查项 | 发生次数 | 结果 |
+|---|---|---|---|
+| UX · 字体 | 应用的文字大小需满足最小字号要求：文本字号不小于 12 fp（推荐），最小不得小于 8 fp（必须） | 2 | **不通过** |
+| UX · 转场动效 | 建议使用系统转场，页面转场采用淡入淡出的运动方式，不应单帧直接切换、左右平移或者上下位移切换，曲线优先使用弹簧曲线 | 7 | 警告 |
+| UX · 滑动动效 | 界面滑动到边界位置时（上下滑动到顶部或底部，左右滑动到左边界或右边界），应该有反馈动效 | 2 | 警告 |
+| UX · 转场动效 | 全屏页面的转场（层级转场、新建转场、编辑转场、搜索转场等）动效时长：8.5 英寸及以下 ≥200 ms；8.5~12 英寸 ≥250 ms；12 英寸以上 ≥300 ms | 6 | 警告 |
+
+三条根因，全都是"能跑起来"根本看不出来的：
+
+1. **一个 7fp 的字**。`view/WeekGrid.ets` 节次列里的钟点小字（"8:00 / 8:45"）是从 Android
+   版照搬的 `fontSize(7)` 配 `lineHeight(8)` —— 当时只想着"34vp 的窄列塞得下"。自检按 8fp
+   划线，直接判不通过。窄格字号 `CellLayout.NARROW_FONT_SIZE = 8` 也正好压在线上（8 是"必须"
+   档，一点余量都没有）。
+2. **本应用其实没有"页面转场"**。整页是"一个 `@Entry` 页面 + `screen` 三态 + 十来个全屏卡片"，
+   切换全靠 `if` 直接增删节点 —— 那就是"单帧直接切换"，动效时长实测 0 ms，于是两条转场规则
+   同时命中（7 次 / 6 次）。当初"少一层导航"的省事，代价正好落在自检上。
+3. **滚到边界是硬停**。`Scroll` 的 `edgeEffect` 默认 `EdgeEffect.None`（`List` 才是 `Spring`），
+   周视图滑到顶/底没有任何反馈。
+
+修法（重新出包，版本升到 0.1.1 / 1000001 —— 应用市场按 versionCode 去重，不升号会被
+"该版本已存在"挡回来）：
+
+1. **字号**：7fp → `CellLayout.GUTTER_TIME_FONT_SIZE = 9`（行距 11；34vp 列宽里 "10:40" 约
+   23vp，放得下）；窄格 8 → 9。并把"不许低于 8fp"变成三道闸：
+   - 常量 `CellLayout.MIN_FONT_SIZE = 8`（注释写明它等于自检的"必须"档）；
+   - `tools/check-ui.mjs`（`npm run check:ui`，已并入 `npm run check`）：扫全部 `.ets` 的
+     `.fontSize(n)` / `.font({size:n})` / `.fontSize('7fp')`，出现 <8fp 直接失败；
+   - `tests/cell-layout.test.ts` 两条断言：一条钉住三个字号常量，一条把 6 高度 × 6 宽度 ×
+     4 字体缩放的组合全跑一遍，断言算出来的 `nameFontSize ≥ 8`。
+2. **转场**：新增 `view/Motion.ets`，实质只有一行
+   `TransitionEffect.OPACITY.animation({ duration: 300, curve: Curve.Friction })`，挂到
+   16 个"页面/全屏弹层"根节点（主屏 + 三个屏 + 十二个全屏卡片/面板）。**只做透明度**
+   （规范原话是"淡入淡出"）、**300 ms**（设备类型含 phone/tablet/2in1，最严一档 250 ms）、
+   **`Curve.Friction`**（系统摩擦/阻尼曲线）。没有用 `curves.springMotion()` 的 `ICurve`：
+   它自带内部时长、会覆盖调用处的 `duration`，自检量到的时长就不受控了。
+   另外三个屏从"`Column` 里的 if 分支"改成"`Stack` 里的 if 分支"：否则旧页淡出期间仍占位，
+   新页会被排到它下面（切换瞬间整个界面下跳一下）。
+3. **滑动**：所有可滚动容器显式 `.edgeEffect(EdgeEffect.Spring)`（周视图、作息列表、导入校对
+   列表、识别原文、复制作息、课表列表、两个编辑面板的 Scroll）。`List` 本来就是 Spring，显式
+   写出来是为了让"到边界有反馈"在代码里看得见。
+
+证据：
+
+- **转场真的在动**：把 `FADE_MS` 临时改成 2000 ms 重新出包，点「作息」后连拍，抓到"周视图与
+  作息页同时半透明"的一帧（`docs/evidence/70-crossfade-2s-probe.jpeg`），下一秒的稳定帧是
+  `71-transition-result.jpeg`。为什么要把窗口放大到 2 s：300 ms 内 `snapshot_display` 抓不到
+  中间态。这不改结论 —— 只证明挂点生效、且确实是透明度交叉淡化。
+- **字号**：`node tools/check-ui.mjs` →
+  `扫描 7 个 .ets，无小于 8fp 的字号（推荐 12fp，低于推荐值的 55 处仅提示）`；
+  设备侧 `uitest dumpLayout` 实测钟点文本 bounds `[20,1152][100,1230]`，宽 80 px（≈22.5 vp）
+  落在 121 px（34 vp）宽的节次列内，两行都没被裁。
+- **发布包能装能跑**：卸载调试包后 `hdc install dist/jiankebiao-0.1.1-release-signed.hap` →
+  `install bundle successfully`；`aa start` 后 `pidof` 有进程（8505），首屏正常（空课表 + 12 节）。
+  之前一次 `install … sign info inconsistent` 不是包不合格，而是**设备上已装着调试签名的同一
+  bundle** —— 先卸载再装就好了。
+- 版本一致性：`app.json5` 0.1.1 / 1000001，`.app` 内 `pack.info` 与 `module.json` 一致
+  （`tools/sign-release.mjs` 断言，不一致会删产物并退出 1）。
+
+**仍未验**：这三条警告改完能不能全过自检，只能再传一次（自检在服务端跑）；真机依旧没连上，
+以上装机结论都来自模拟器（1280×2832、API 26）。
+
+> 一个反直觉的观察：装好的发布包用 `bm dump -n com.calss.jiankebiao` 看，`appProvisionType`
+> 是 `debug`、`appDistributionType` 是 `none`、`appId` 后缀为空；而同一份包用 `verify-app` /
+> `verify-profile` 回读是 `type=release` + `app-distribution-type=app_gallery` +
+> `app-identifier=6917621438836886292`。说明**模拟器的 `bm dump` 不能当签名判据**，判据只有
+> 包内 profile（`verify-app`）与 AGC 自检结果。
 
 ## 7. 遗留风险
 
@@ -415,3 +490,22 @@ verify-app success
 为什么不用 `grep`：grep 只能看单行，而本仓库大量使用**多行 import**、`export * from './X'`、
 `../` 跨层引用 —— 这三类正好是 grep 漏掉的（原 workflow 就是这么漏的）。脚本自己也验证过：
 故意放一个违规文件进去，四类违规全部报错并返回 1。
+
+## 9. UI 规范守卫脚本
+
+`node tools/check-ui.mjs`（= `npm run check:ui`；`npm run check` = 架构守卫 + UI 守卫）。
+它只干一件事：把应用市场自检里那条**硬指标**变成本地能跑的红线 ——
+
+1. 扫 `entry/src/main/ets/**/*.ets` 里所有字号字面量：`.fontSize(7)`、`.fontSize('7fp')`、
+   `.font({ size: 7 })`；
+2. 小于 8fp → 打 `::error::` 并退出 1（对应自检"最小不得小于 8 fp（必须）"）；
+3. 8~11fp → 只列提示、不失败（自检对"推荐 12fp"不判失败；而周视图格子物理上只有 22~46vp 宽，
+   12fp 会把中文挤成一列竖字）。
+
+为什么不写成测试：这是**扫源码**的规则，对象是全部 `.ets`（含不在 Node 测试范围内的 UI 层）。
+两者分工不重叠 —— `check-ui.mjs` 管"字面量随手写死"，`tests/cell-layout.test.ts` 管
+"常量与算式"（把字号常量当契约钉住，并遍历高度/宽度/缩放组合断言 ≥8fp）。
+
+脚本自己也验证过：临时放一个 `Text('x').fontSize(7)` 的探针文件进去，
+输出 `::error::view/__probe.ets:2 fontSize = 7fp，小于上架自检的硬下限 8fp` 且退出码 1；
+删掉探针后回到 `UI 规范守卫通过：扫描 7 个 .ets，无小于 8fp 的字号`。

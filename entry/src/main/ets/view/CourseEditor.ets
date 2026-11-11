@@ -1,5 +1,6 @@
 import { CourseDraft } from '../logic';
 import { type CourseDraftPayload, type DraftRow, type DraftResult } from '../logic';
+import { Motion } from './Motion';
 
 /**
  * 课程编辑面板（新建 / 编辑共用）。
@@ -129,6 +130,7 @@ export struct CourseEditor {
       .layoutWeight(1)
       .width('100%')
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
       .align(Alignment.Top)
     }
     .width('100%')
@@ -137,6 +139,7 @@ export struct CourseEditor {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+    .transition(Motion.fadeInOut())
   }
 
   @Builder

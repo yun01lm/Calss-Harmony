@@ -1,5 +1,6 @@
 import { SlotDraft } from '../logic';
 import { type SlotCheckResult, type SlotForm, type SlotRow } from '../logic';
+import { Motion } from './Motion';
 
 /**
  * 节次编辑弹窗（**手动编辑作息**与**导入校对页**共用同一个，与 Android 的
@@ -160,6 +161,7 @@ export struct SlotEditor {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   private submit(): void {

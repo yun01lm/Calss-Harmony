@@ -81,7 +81,7 @@ platform/Rdb.ts            tests/helpers/sqliteRunner.ts
 entry/src/main/ets/
 ├── entryability/EntryAbility.ets   入口（启动路径零初始化）
 ├── pages/Index.ets                 主页（周视图）
-├── view/                           网格、周次条、对话框
+├── view/                           网格、周次条、对话框、Motion（统一转场/滑动参数）
 ├── platform/                       Rdb / Picker / Pdf / Ocr 适配器
 ├── data/                           schema、migrations、ScheduleStore
 ├── logic/                          ★ 纯逻辑（对应 Android 的 model/ 与解析层）

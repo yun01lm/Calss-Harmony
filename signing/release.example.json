@@ -9,6 +9,6 @@
   "unsignedApp": "build/outputs/default/Calss-Harmony-default-unsigned.app",
   "unsignedHap": "entry/build/default/outputs/default/entry-default-unsigned.hap",
   "outDir": "dist",
-  "outNameApp": "jiankebiao-0.1.0-release.app",
-  "outNameHap": "jiankebiao-0.1.0-release-signed.hap"
+  "outNameApp": "jiankebiao-0.1.1-release.app",
+  "outNameHap": "jiankebiao-0.1.1-release-signed.hap"
 }

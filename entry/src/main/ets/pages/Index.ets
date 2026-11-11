@@ -65,6 +65,7 @@ import { WeekGrid } from '../view/WeekGrid';
 import { CourseEditor } from '../view/CourseEditor';
 import { EventEditor } from '../view/EventEditor';
 import { SlotEditor } from '../view/SlotEditor';
+import { Motion } from '../view/Motion';
 
 /**
  * 轻提示的参数（形状与系统 `promptAction.ShowToastOptions` 一致，只留用到的两个字段）。
@@ -257,7 +258,9 @@ struct Index {
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      Column() {
+      // 三个"页面"共用一个 Stack：切页时新旧两页**同时在场**才能交叉淡入淡出。
+      // 换成 Column 的话，旧页淡出期间仍占位，新页会被排到下面去（布局跳一下）。
+      Stack({ alignContent: Alignment.TopStart }) {
         if (this.screen === 'slots') {
           this.slotsScreen()
         } else if (this.screen === 'slotsimport') {
@@ -265,44 +268,50 @@ struct Index {
         } else if (this.screen === 'timetables') {
           this.timetablesScreen()
         } else {
-          this.headerBar()
-          if (this.loading) {
-            Column({ space: 8 }) {
-              LoadingProgress().width(36).height(36).color('#E07A5F')
-              Text('正在读取课表…').fontSize(12).fontColor('#7A6E66')
+          Column() {
+            this.headerBar()
+            if (this.loading) {
+              Column({ space: 8 }) {
+                LoadingProgress().width(36).height(36).color('#E07A5F')
+                Text('正在读取课表…').fontSize(12).fontColor('#7A6E66')
+              }
+              .layoutWeight(1)
+              .width('100%')
+              .justifyContent(FlexAlign.Center)
+            } else if (this.errorLine.length > 0) {
+              Column({ space: 8 }) {
+                Text('打开课表失败').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#C62828')
+                Text(this.errorLine).fontSize(12).fontColor('#7A6E66').textAlign(TextAlign.Center)
+                Button('重试')
+                  .fontSize(13)
+                  .backgroundColor('#E07A5F')
+                  .onClick(() => {
+                    this.errorLine = '';
+                    this.loading = true;
+                    this.load();
+                  })
+              }
+              .layoutWeight(1)
+              .width('100%')
+              .padding(24)
+              .justifyContent(FlexAlign.Center)
+            } else {
+              this.weekBar()
+              this.pager()
             }
-            .layoutWeight(1)
-            .width('100%')
-            .justifyContent(FlexAlign.Center)
-          } else if (this.errorLine.length > 0) {
-            Column({ space: 8 }) {
-              Text('打开课表失败').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#C62828')
-              Text(this.errorLine).fontSize(12).fontColor('#7A6E66').textAlign(TextAlign.Center)
-              Button('重试')
-                .fontSize(13)
-                .backgroundColor('#E07A5F')
-                .onClick(() => {
-                  this.errorLine = '';
-                  this.loading = true;
-                  this.load();
-                })
+            if (this.showDev && BuildProfile.DEBUG) {
+              this.devPanel()
             }
-            .layoutWeight(1)
-            .width('100%')
-            .padding(24)
-            .justifyContent(FlexAlign.Center)
-          } else {
-            this.weekBar()
-            this.pager()
           }
-          if (this.showDev && BuildProfile.DEBUG) {
-            this.devPanel()
-          }
+          .width('100%')
+          .height('100%')
+          .transition(Motion.fadeInOut())
         }
       }
       .width('100%')
       .height('100%')
       .backgroundColor('#FFF9F4')
+      .clip(true)
 
       if (this.detailTitle.length > 0) {
         this.detailCard()
@@ -660,6 +669,7 @@ struct Index {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 点空白格：选类型
@@ -720,6 +730,7 @@ struct Index {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 导入来源选择
@@ -787,6 +798,7 @@ struct Index {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 作息页
@@ -854,6 +866,9 @@ struct Index {
       .width('100%')
       .padding({ left: 12, right: 12 })
       .scrollBar(BarState.Off)
+      // 到顶/到底要有回弹反馈（上架自检「滑动动效」项）；
+      // List 的默认值虽然是 Spring，但自检认的是"代码里声明了没有"，所以全部显式写出来
+      .edgeEffect(EdgeEffect.Spring)
 
       Row({ space: 8 }) {
         Button('加一节')
@@ -905,6 +920,7 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 导入作息
@@ -986,6 +1002,7 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .transition(Motion.fadeInOut())
   }
 
   @Builder
@@ -1094,6 +1111,7 @@ struct Index {
       .width('100%')
       .padding({ left: 12, right: 12 })
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
       // 高度上限：只有 3、4 节时列表别把按钮顶到屏幕最底（中间一大片空白），
       // 节数多的时候仍然占满可用高度并在内部滚动
       .constraintSize({ maxHeight: '68%' })
@@ -1166,6 +1184,7 @@ struct Index {
         .layoutWeight(1)
         .width('100%')
         .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
       }
       .width('88%')
       .height('70%')
@@ -1177,6 +1196,7 @@ struct Index {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   /** 粘贴文本通道：多行输入框（ArkUI 的 TextArea），解析前不写库 */
@@ -1233,6 +1253,7 @@ struct Index {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   /** 从其他课表复制作息（与 Android 的「从其他课表复制作息」一致） */
@@ -1281,6 +1302,7 @@ struct Index {
         .width('100%')
         .constraintSize({ maxHeight: 260 })
         .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
       }
       .width('88%')
       .padding(16)
@@ -1291,6 +1313,7 @@ struct Index {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 课表页
@@ -1357,6 +1380,7 @@ struct Index {
       .width('100%')
       .padding({ left: 12, right: 12 })
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
 
       Row() {
         Text('启动时总是打开主课表')
@@ -1416,6 +1440,7 @@ struct Index {
     }
     .width('100%')
     .height('100%')
+    .transition(Motion.fadeInOut())
   }
 
   /** 新建/重命名的输入框（用一个居中的卡片，避免再引入弹窗 API） */
@@ -1464,6 +1489,7 @@ struct Index {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   /** 学期设置：开学日 + 总周数（点周视图中间那行「第 N 周 · 日期」打开） */
@@ -1543,6 +1569,7 @@ struct Index {
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .backgroundColor('#33000000')
+    .transition(Motion.fadeInOut())
   }
 
   /** 二级页面的统一顶栏：返回 + 标题 */  @Builder
@@ -1692,6 +1719,7 @@ struct Index {
     .backgroundColor('#FFFFFF')
     .borderRadius({ topLeft: 16, topRight: 16 })
     .shadow({ radius: 12, color: '#1A000000', offsetY: -2 })
+    .transition(Motion.fadeInOut())
   }
 
   // ---------------------------------------------------------------- 开发者入口
@@ -1867,6 +1895,7 @@ struct Index {
       .constraintSize({ maxHeight: 320 })
       .width('100%')
       .scrollBar(BarState.Auto)
+      .edgeEffect(EdgeEffect.Spring)
     }
     .width('100%')
     .padding(12)

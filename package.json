@@ -1,6 +1,6 @@
 {
   "name": "calss-harmony",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "简课表 · 鸿蒙版（纯逻辑层用 Node 原生跑测试，不需要鸿蒙 SDK）",
@@ -8,6 +8,8 @@
     "test": "node --test \"tests/*.test.ts\"",
     "test:watch": "node --test --watch \"tests/*.test.ts\"",
     "check:arch": "node tools/check-architecture.mjs",
+    "check:ui": "node tools/check-ui.mjs",
+    "check": "npm run check:arch && npm run check:ui",
     "check:sign": "node tools/check-signing.mjs",
     "build": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap --no-daemon",
     "build:release": "node \"C:/Program Files/Huawei/DevEco Studio/tools/hvigor/bin/hvigorw.js\" assembleHap -p buildMode=release --no-daemon",

@@ -54,6 +54,8 @@ export struct WeekGrid {
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
+      // 滑到顶/底要有回弹反馈（上架自检「滑动动效」项：到边界应有反馈动效）
+      .edgeEffect(EdgeEffect.Spring)
       .width('100%')
       .onAreaChange((oldValue: Area, newValue: Area) => {
         const w: number = Number(newValue.width);
@@ -131,8 +133,11 @@ export struct WeekGrid {
         .fontColor('#7A6E66')
       if (CellLayout.showGutterTime(this.fontScale)) {
         Text(this.slotTimeText(period))
-          .fontSize(7)
-          .lineHeight(8)
+          // 9fp 是**下限**：应用市场自检的「字体」项写死"最小不得小于 8 fp（必须）"，
+          // 原先是 7fp（8fp 的行距），2026-11 自检直接被判「不通过」。
+          // 节次列宽 34vp 时 9fp 的 "08:00" 约 23vp，放得下；字号常量集中在 CellLayout。
+          .fontSize(CellLayout.GUTTER_TIME_FONT_SIZE)
+          .lineHeight(CellLayout.GUTTER_TIME_LINE_HEIGHT)
           .textAlign(TextAlign.Center)
           .fontColor('#B3A79E')
       }

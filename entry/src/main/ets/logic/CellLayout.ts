@@ -59,8 +59,28 @@ export class CellLayout {
   /** 可视高度小于该值时认为"小屏" */
   static readonly SMALL_SCREEN_MAX_HEIGHT: number = 520;
 
-  /** 字体放大超过该倍数时，隐藏节次列的钟点小字（那两行 7fp 会被挤没） */
+  /** 字体放大超过该倍数时，隐藏节次列的钟点小字（那两行小字会被挤没） */
   static readonly GUTTER_TIME_MAX_FONT_SCALE: number = 1.3;
+
+  /**
+   * 节次列钟点小字的字号/行距（fp）。
+   *
+   * **9fp 是硬下限，别再往下调**：应用市场「上架自检」的 UX 项「字体」写的是
+   * "文本字号不小于 12 fp（推荐），最小不得小于 8 fp（必须）"。原先这里是 7fp
+   * （行距 8），2026-11 的发布自检直接判了「不通过」。
+   * 视觉上 9fp 与 7fp 在 34vp 宽的行首列里几乎一样，但 9fp 能过检、也更清晰。
+   */
+  static readonly GUTTER_TIME_FONT_SIZE: number = 9;
+  static readonly GUTTER_TIME_LINE_HEIGHT: number = 11;
+
+  /**
+   * 全应用字号下限（fp）——与上架自检的"必须"档一致。
+   *
+   * `tools/check-architecture.mjs` 会扫全部 `.ets`：出现比它更小的字号就构建失败，
+   * 免得以后谁"为了塞下"又调回 7fp（那会直接卡上架）。
+   */
+  static readonly MIN_FONT_SIZE: number = 8;
+
 
   /**
    * 窄格阈值（vp）：两门课撞在同一时段时，每门只剩约 22vp 宽。
@@ -70,8 +90,13 @@ export class CellLayout {
    */
   static readonly NARROW_WIDTH: number = 40;
 
-  /** 窄格用的字号（fp） */
-  static readonly NARROW_FONT_SIZE: number = 8;
+  /**
+   * 窄格用的字号（fp）。
+   *
+   * 9fp 同样是下限：22vp 宽的一格里，9fp 仍能排下两个字，再小就过不了上架自检的
+   * 「字体」项（<8fp 判不通过）。
+   */
+  static readonly NARROW_FONT_SIZE: number = 9;
 
   /**
    * 计算一个格子能显示多少行文字。

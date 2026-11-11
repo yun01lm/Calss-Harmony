@@ -2,8 +2,11 @@
   "app": {
     "bundleName": "com.calss.jiankebiao",
     "vendor": "calss",
-    "versionCode": 1000000,
-    "versionName": "0.1.0",
+    // 为什么是 1000001：2026-11-11 上传 1000000 跑「上架自检」，UX「字体」一项被判不通过
+    // （见 docs/ACCEPTANCE.md §6.14）。修完需要重新上传同一个应用，而应用市场按
+    // versionCode 去重 —— 不升号会被"该版本已存在"挡回来。
+    "versionCode": 1000001,
+    "versionName": "0.1.1",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }
