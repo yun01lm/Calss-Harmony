@@ -800,39 +800,6 @@ struct Index {
           this.importChoiceOpen = false;
           this.startImportTable();
         })
-
-      // 上架审核反馈原文：「应用从教务系统表格导入课表功能需使用网页表格导致未完全遍历，
-      // 无法测试」。审核的测试员手上没有教务系统导出的文件和课表 PDF，而应用的导入**必须**
-      // 依赖外部文件 —— 于是这条通道他永远走不到。这里放两个内置示例（合成数据，无姓名学号），
-      // 让"选文件"换成"点示例"，后面解析 → 预览 → 写入整条路完全一样（见 docs/ACCEPTANCE.md §6.15）。
-      Row({ space: 8 }) {
-        Button('示例：表格课表')
-          .fontSize(12)
-          .height(32)
-          .layoutWeight(1)
-          .backgroundColor('#D9D2CC')
-          .fontColor('#3B3430')
-          .onClick(() => {
-            this.importChoiceOpen = false;
-            this.runTableImportFromRawSample('jwxt-sample.html', '内置示例');
-          })
-        Button('示例：PDF 课表')
-          .fontSize(12)
-          .height(32)
-          .layoutWeight(1)
-          .backgroundColor('#D9D2CC')
-          .fontColor('#3B3430')
-          .onClick(() => {
-            this.importChoiceOpen = false;
-            this.runPdfImportFromRawSample('spike-timetable.pdf', '内置示例');
-          })
-      }
-      .width('100%')
-
-      Text('没有现成的文件？上面两个示例用的是应用内置的合成数据，走的是完全相同的导入流程。')
-        .fontSize(10)
-        .fontColor('#A89C93')
-        .width('100%')
     }
     .width('100%')
     .padding(16)
@@ -1078,18 +1045,6 @@ struct Index {
         .backgroundColor('#9A8C82')
         .onClick(() => {
           this.startSlotImportPdf();
-        })
-
-      // 与「导入课表」里的示例同一个理由：审核/新用户手上不一定有作息表 PDF。
-      // 走的是生产路径 `importSlotsFromPdf`，唯一差别是文件从包内 rawfile 来。
-      Button('没有文件？用内置示例作息表试试')
-        .fontSize(12)
-        .height(36)
-        .width('100%')
-        .backgroundColor('#D9D2CC')
-        .fontColor('#3B3430')
-        .onClick(() => {
-          this.runSlotsImportFromRawSamplePdf();
         })
 
       Text('「粘贴文本」最稳：从网页、微信、或相册自带的文字识别里复制作息行即可，每行要同时包含节次号和起止时间，例如「1  8:00-8:45」。')
@@ -2502,9 +2457,9 @@ struct Index {
   /**
    * 「导入 → PDF」在**选到文件之后**的全部流程：文字层 → 解析；没有文字层 → 渲染 + OCR。
    *
-   * 单独抽出来是因为它有两个入口（系统文件选择器、内置示例），两条入口必须走同一段
-   * 兜底逻辑 —— 否则会出现"内置样张导得进、真文件导不进"这种只在真机上出现的差异，
-   * 而命令行验的恰好是前者。
+   * 单独抽出来是因为它有两个入口（系统文件选择器、开发者入口里从 rawfile 读的内置样张），
+   * 两条入口必须走同一段兜底逻辑 —— 否则会出现"内置样张导得进、真文件导不进"这种只在
+   * 真机上出现的差异，而命令行验的恰好是前者。
    */
   private async importPdf(ability: common.UIAbilityContext, base64: string): Promise<void> {
     await this.withPdfSession((stage: string) => {
@@ -2598,6 +2553,10 @@ struct Index {
   }
 
   // ---------------------------------------------------------------- PDF 的 OCR 兜底
+
+  /** OCR 兜底的结果要带在预览/校对页上的提示（两条通道共用一句话，免得各写一遍） */
+  private static readonly OCR_FALLBACK_WARNING: string =
+    '这份 PDF 没有文字层，已改用图片识别；识别结果可能不如原文件准确，请逐条核对后再导入。';
 
   /**
    * 文字层取不出东西时：**把页面渲染成图片，交给设备端 OCR**。
@@ -2720,6 +2679,7 @@ struct Index {
   private onPdfOcrPages(pages: OcrPage[]): void {
     const courses: RawCourse[] = [];
     const warnings: string[] = [];
+    warnings.push(Index.OCR_FALLBACK_WARNING);
     if (this.pdfOcrNote.length > 0) {
       warnings.push(this.pdfOcrNote);
       this.pdfOcrNote = '';
@@ -3444,10 +3404,9 @@ struct Index {
   /**
    * 用**内置的 PDF** 走一遍生产路径的「导入 → PDF」通道。
    *
-   * 两个入口共用（所以不是 debug 专属）：
-   * 1. 开发者入口：`spike-timetable.pdf`（合成课表，用来复验 viewer.html 的改动）；
-   * 2. **导入弹窗里的「用内置示例课表试试」**：上架审核的测试员手上没有任何课表文件，
-   *    这条入口让他不用外部文件就能把"解析 → 预览 → 写入"整条路走完（见 docs/ACCEPTANCE.md §6.15）。
+   * 只在 debug 包的开发者入口里出现。用 `spike-timetable.pdf`（合成课表）复验 viewer.html 的
+   * 改动、以及"文字层为空 → 渲染 + OCR"整条兜底链（`image-timetable.pdf`）。
+   * 生产构建里**没有**内置示例按钮：审核员手上有真实文件（见 docs/ACCEPTANCE.md §6.15 的录屏逐帧）。
    *
    * 存在的理由：这条通道唯一的人工验法是"点导入 → 系统文件选择器 → 挑一份 PDF"，
    * 而**文件选择器没法用命令行驱动**（`uitest dumpLayout` 看不到系统面板）。
@@ -3492,8 +3451,7 @@ struct Index {
   /**
    * 用**内置的合成教务表格**走一遍生产路径的「导入 → 教务系统表格」通道。
    *
-   * 两个入口共用：开发者入口（复验解析器）与**导入弹窗里的「用内置示例课表试试」**
-   * （上架审核的测试员没有教务系统导出的文件，这条入口让他能走完整条路）。
+   * 只在 debug 包的开发者入口里出现（复验解析器）。生产构建里没有内置示例按钮。
    *
    * 和 PDF 那条一样，也是为了绕开"系统文件选择器没法用命令行驱动"。
    * 内置样张是 `tests/fixtures/jwxt-sample.html`（姓名/课程全假），真实导出文件不能进仓库。
@@ -3589,7 +3547,7 @@ struct Index {
   }
 
   /**
-   * 「导入作息 → PDF」在**选到文件之后**的全部流程（两个入口共用：文件选择器、内置示例）。
+   * 「导入作息 → PDF」在**选到文件之后**的全部流程（文件选择器与 debug 的内置样张共用）。
    *
    * 与课程导入的差别只在"拿到文字之后交给谁"：这里交给 `TimetableTextParser`（纯文本行），
    * 课程那边交给网格/列表解析器。文字从哪来（文字层 or OCR）两条通道完全一致。
@@ -3615,16 +3573,20 @@ struct Index {
         this.slotImportStage = stage;
       }, '可以改用「识别图片」或「粘贴文本」导入作息。');
       this.finishSlotParse(PdfPageImages.stackPages(pages), source + ' · 图片识别');
-      // `finishSlotParse` 用解析器的告警整体覆盖了数组，页数提示要在这里补回去
-      if (this.pdfOcrNote.length > 0 && this.slotImportPhase === 'review') {
-        this.slotImportWarnings = this.slotImportWarnings.concat([this.pdfOcrNote]);
+      // `finishSlotParse` 用解析器的告警整体覆盖了数组，这两条提示要在这里补回去
+      if (this.slotImportPhase === 'review') {
+        const notes: string[] = [Index.OCR_FALLBACK_WARNING];
+        if (this.pdfOcrNote.length > 0) {
+          notes.push(this.pdfOcrNote);
+        }
+        this.slotImportWarnings = this.slotImportWarnings.concat(notes);
       }
       this.pdfOcrNote = '';
     });
   }
 
   /**
-   * 「导入作息 → PDF」的内置示例（发布版可见，上架审核用）。
+   * 「导入作息 → PDF」的内置样张（只在 debug 包的开发者入口里）。
    *
    * 用的是随包发布的**合成作息表 PDF**（`sample-slots.pdf`，没有姓名学号），
    * 走的是与真实文件完全相同的 `importSlotsFromPdf` —— 只有"文件从哪来"不同。
