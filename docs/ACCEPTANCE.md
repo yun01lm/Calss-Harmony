@@ -545,9 +545,13 @@ sha256 `5be2fe8550beabf0d4b01102e1adaf85f20cf1caee5b78895c551ab274d4a057`），
 > **上一个文件的作息**写进库 —— 静默写错数据。修法：三个入口（PDF / 截图 / 内置 PDF 样张）
 > 都在重置预览状态时一并 `importSlots = []`；实测同一顺序复现后不再出现该按钮。
 
-**仍未验 / 要说清的**：
+- **发布产物（0.1.2 / 1000002）**：`dist/jiankebiao-0.1.2-release.app` 1,179,154 B ·
+  sha256 `b991a333f080ae4a431f2e6db6da8bed108db4a8a65aa351a855f142f7220452`（`verify-app`：
+  release / app_gallery / 0.1.2·1000002）；`dist/jiankebiao-0.1.2-release-signed.hap` 2,743,355 B ·
+  sha256 `acf2d742de287090fd7747c37d9a3d5b8ae81d4a5bde6ee7e16385dd9438845b`。
+  比 0.1.1 大了约 0.3 MB：全量 GB CMap（base64 390KB）+ 两个合成的 PDF 样张。
 
-- **PDF→图→OCR 的识别质量**：这台模拟器没有 OCR 后端（`1001400001`），识别那一步只能在
+**仍未验 / 要说清的**：- **PDF→图→OCR 的识别质量**：这台模拟器没有 OCR 后端（`1001400001`），识别那一步只能在
   真机跑。能证明的是链路（渲染 → 落盘 → 调用 OCR → 报可诊断的错）与解析器（同一套
   `GridFromOcr` / `TimetableTextParser`，图片通道已在 Pura 70 真机验过 12 节，见 §5.3）。
 - **审核员那份 PDF 到底是什么类型**，只能从他给的描述推断；上面三条路（CMap 缺失、
