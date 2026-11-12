@@ -71,8 +71,12 @@ export class Ocr {
    *
    * 失败时抛出的 `Error.message` 已经是**给用户看的**文案（`friendlyError` 翻译过），
    * 调用方直接显示即可；原始错误码在文案末尾。
+   *
+   * @param hint 失败时附在末尾的"下一步建议"。**必须按通道给**：这套 OCR 同时服务
+   *   「导入作息 → 识别图片」「导入 → 课表截图」「PDF 无文字层」三处，
+   *   写死一句"改用粘贴文本导入作息"在课表导入里是错的（上架审核前就是这么错的）。
    */
-  static async readLines(ctx: common.UIAbilityContext, uri: string): Promise<OcrOutcome> {
+  static async readLines(ctx: common.UIAbilityContext, uri: string, hint: string = ''): Promise<OcrOutcome> {
     let file: fileIo.File | null = null;
     let source: image.ImageSource | null = null;
     let pixelMap: image.PixelMap | null = null;
@@ -111,7 +115,7 @@ export class Ocr {
       };
       return outcome;
     } catch (e) {
-      throw new Error(Ocr.friendlyError(e));
+      throw new Error(Ocr.friendlyError(e, hint));
     } finally {
       if (pixelMap !== null) {
         try {
@@ -144,12 +148,15 @@ export class Ocr {
   }
 
   /** 把 OCR 的原始异常翻译成用户能看懂、且**能据此行动**的话 */
-  static friendlyError(e: Object): string {
+  static friendlyError(e: Object, hint: string = ''): string {
     const code: number = Ocr.errorCodeOf(e);
     const raw: string = (e as Error).message === undefined ? '' : (e as Error).message;
+    // 没给 hint 时保持早先的作息文案（老调用点/老版本行为不变）
+    const tip: string = hint.length > 0
+      ? '\n' + hint
+      : '\n改用「粘贴文本」或「从 PDF 文件」都能导入作息；也可以直接在作息页手动改。';
     if (code === 1001400001 || code === 1001400002) {
-      return '这台设备的系统 OCR 服务不可用（错误码 ' + code + '）。\n' +
-        '改用「粘贴文本」或「从 PDF 文件」都能导入作息；也可以直接在作息页手动改。';
+      return '这台设备的系统 OCR 服务不可用（错误码 ' + code + '）。' + tip;
     }
     if (code === 200) {
       return '识别超时（错误码 200）：换成小一点的图，或再试一次。';
@@ -163,8 +170,7 @@ export class Ocr {
     if (raw.length > 0) {
       return '识别失败：' + raw + (code > 0 ? '（错误码 ' + code + '）' : '');
     }
-    return '识别失败：' + (code > 0 ? '错误码 ' + code : '未知错误') +
-      '\n改用「粘贴文本」或「从 PDF 文件」都能导入作息。';
+    return '识别失败：' + (code > 0 ? '错误码 ' + code : '未知错误') + (code > 0 ? tip : '');
   }
 
   // ---------------------------------------------------------------- 内部

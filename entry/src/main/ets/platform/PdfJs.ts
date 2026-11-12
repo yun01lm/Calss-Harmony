@@ -1,5 +1,8 @@
 /**
- * PDF 文本抽取的**平台侧**：把 PDF 丢给 ArkWeb 里的 pdf.js，拿回带坐标的文本片段。
+ * PDF 文本抽取的**平台侧**：只负责"把 rawfile 里的 PDF 读成 base64"。
+ *
+ * 真正跑 pdf.js 的地方是 `rawfile/pdfjs/viewer.html`（ArkWeb 里的 JS）；
+ * 与它对话用的脚本名/片段在 `logic/PdfScripts.ts`（纯字符串，可在 Node 上断言）。
  *
  * ## 为什么不是 PDF Kit
  *
@@ -11,19 +14,13 @@
  *
  * 所以改走 ArkWeb + pdf.js：`textContent.items` 带 `transform` 矩阵，坐标齐全。
  *
- * ## 分工
- *
- * - `rawfile/pdfjs/viewer.html`：**唯一**懂 pdf.js 的地方（跑在 WebView 里，JS）；
- * - `logic/PdfRunText.ts`：解析它回传的制表符文本（纯逻辑，Node 上有断言）；
- * - 本文件：把 rawfile 的 PDF 编码成 base64 传进去，并给出取结果的 JS 片段。
- *
  * ## 结果怎么拿回来（踩过一次坑）
  *
  * 一开始用 `registerJavaScriptProxy` + `refresh()` 让 JS 回调 ArkTS。
  * 但 Web 组件改成"点了导入才创建"之后，创建/注册/重载的时序一旦错开，
  * JS 里的 `window.pdfBridge` 就是 undefined —— 解析结果**静默丢失**，
  * 界面一直卡在"解析中…"。现在改成：JS 把结果写进 `window.__pdfResult`，
- * ArkTS 用 `runJavaScript` **轮询**取（见 `pollScript` / `errorScript`）。
+ * ArkTS 用 `runJavaScript` **轮询**取（见 `PdfScripts.RESULT_SCRIPT`）。
  */
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
@@ -41,31 +38,4 @@ export class PdfJs {
     const helper: util.Base64Helper = new util.Base64Helper();
     return helper.encodeToStringSync(data);
   }
-
-  /**
-   * 生成调用 `viewer.html` 里 `__runExtract` 的 JS 代码。
-   * base64 只含 `A-Za-z0-9+/=`，直接放进双引号里是安全的（不需要转义）。
-   */
-  static extractCall(base64: string): string {
-    return '__runExtract("' + base64 + '")';
-  }
-
-  /** 取"成功结果"的 JS 片段（空串 = 还没算完） */
-  static readonly RESULT_SCRIPT: string = 'window.__pdfResult';
-
-  /** 取"失败结果"的 JS 片段（空串 = 没出错） */
-  static readonly ERROR_SCRIPT: string = 'window.__pdfError';
-
-  /**
-   * 开始新一轮抽取前必须先清空上一次的返回值。
-   *
-   * 不清的后果是**上一个文件的结果被当成这一个文件的**：`__pdfResult` 一直留着，
-   * 新文件的 `__runExtract` 还没开始（或直接失败），轮询第一轮就读到旧值，
-   * 界面显示 B 的文件名、里面是 A 的课，"覆盖当前课表"就真的把 A 写进库了。
-   */
-  static readonly CLEAR_SCRIPT: string =
-    'window.__pdfResult = null; window.__pdfError = null; ""';
-
-  /** 页面是否已就绪（pdf.js 已加载） */
-  static readonly READY_SCRIPT: string = '(window.pdfjsLib ? "1" : "")';
 }

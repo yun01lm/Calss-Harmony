@@ -20,6 +20,11 @@
 <body>
 <div id="log">pdf.js 未开始</div>
 <script src="pdf.min.js"></script>
+<!--
+  `pdfjsLib` 出现 ≠ 页面可用：入口函数要等 cmaps-data.js 解析完之后的内联脚本才定义。
+  求差就是"竞态窗口"有多宽（ArkTS 侧的就绪判据必须等入口函数，见 logic/PdfScripts.ts）。
+-->
+<script>window.__tLib = Date.now();</script>
 <script src="cmaps-data.js"></script>
 <script>
   /*
@@ -38,6 +43,11 @@
    *   END
    * 或
    *   ERR\t<message>\nEND
+   */
+  /*
+   * 两行时间戳：`pdfjsLib` 出现 ≠ 页面可用。入口函数在下面的内联脚本里才定义，
+   * 中间隔着 cmaps-data.js 的解析。ArkTS 侧的就绪判定必须等入口函数（见 PdfJs.READY_SCRIPT），
+   * 这两行日志就是"两个时间点差多少"的证据（onConsole 会收进开发者入口的 web 日志里）。
    */
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
 
@@ -109,7 +119,9 @@
      * `/Type0 /Encoding UniGB-UCS2-H`（Adobe-GB1 中文字体）且**没有 ToUnicode**，
      * 这时 pdf.js 必须去加载预定义 CMap 才能把字形码翻成汉字；
      * 不配这两个参数，它会把整页文字**整个丢掉** —— 实测真实文件得到 "2 页 / 0 个文本项"。
-     * cmaps/ 目录里只放了 GB 系列（约 136KB），没有全量 2MB。
+     * cmaps-data.js 里放了**全量 GB 系列**（33 个，raw 285KB / base64 约 380KB）：
+     * 中文 PDF 的编码不止 UniGB-UCS2-H，GBKp-EUC-H / GBK2K-H / GBT-EUC-H 都很常见，
+     * 少一个名字就是"零个可读片段"（上架审核报的「没有可读文本」就是这样来的）。
      */
     let doc = null;
     try {
@@ -177,7 +189,7 @@
     window.__pdfError = '';
     /*
      * pdf.js 没加载出来时**必须明说**：脚本被拦（CSP）或缺文件时，pdfjsLib 是 undefined，
-     * 后面每一行都会抛，而 ArkTS 侧 unJavaScript 的返回值只是 undefined → 字面量 "null"，
+     * 后面每一行都会抛，而 ArkTS 侧 runJavaScript 的返回值只是 undefined → 字面量 "null"，
      * 界面上就成了 "无法识别的回传头: null" —— 排查十分钟也想不到是 CSP。
      * （2026-10-26 加 CSP 时正是这么踩的：script-src 'self' 不匹配 resource:// 页面。）
      */
@@ -213,6 +225,88 @@
   };
 
   log('pdf.js ' + pdfjsLib.version + ' 已就绪');
+  window.__tEntry = Date.now();
+  console.log('[pdfjs] pdfjsLib→入口函数 ' + (window.__tEntry - window.__tLib) + 'ms');
+
+  // ---------------------------------------------------------------- 页面 → 图片（OCR 兜底）
+  /*
+   * 有些 PDF 一个可读字符都取不出来：扫描件（整页就是一张图）、以及**字体没有 Unicode
+   * 映射**的生成器产物（CID 字体缺 ToUnicode，字形码翻不成汉字）。这两类文字层都救不了，
+   * 只能"渲染成图 → 交给设备端 OCR"。渲染在这里做：pdf.js 本来就有 canvas 渲染能力。
+   *
+   * 结果走和文本同样的轮询通道（`window.__pageImg`），不用代理回调 —— 理由见上面那段注释。
+   */
+  window.__ocrDoc = null;
+  window.__ocrPages = 0;
+  window.__ocrState = '';
+  window.__ocrErr = '';
+  window.__pageImg = '';
+
+  /** 打开文档（只建对象）。`__ocrState` = 'ready' 时 `__ocrPages` 才有值。 */
+  window.__ocrOpen = function (base64) {
+    window.__ocrDoc = null;
+    window.__ocrPages = 0;
+    window.__ocrState = 'opening';
+    window.__ocrErr = '';
+    window.__pageImg = '';
+    if (typeof pdfjsLib === 'undefined') {
+      window.__ocrState = 'error';
+      window.__ocrErr = 'pdf.js 没能加载（脚本被 CSP/资源限制拦住了，或 pdf.min.js 缺失）';
+      return;
+    }
+    pdfjsLib.getDocument({
+      data: base64ToBytes(base64),
+      cMapUrl: 'cmaps/',
+      cMapPacked: true,
+      CMapReaderFactory: InlineCMapReaderFactory,
+      isEvalSupported: false,
+    }).promise.then(function (doc) {
+      window.__ocrDoc = doc;
+      window.__ocrPages = doc.numPages;
+      window.__ocrState = 'ready';
+      log('OCR 兜底：文档已打开，' + doc.numPages + ' 页');
+    }).catch(function (e) {
+      window.__ocrState = 'error';
+      window.__ocrErr = String(e && e.message ? e.message : e).replace(/[\t\r\n]/g, ' ');
+      log('OCR 兜底：打开失败 ' + window.__ocrErr);
+    });
+  };
+
+  /**
+   * 渲染一页为 PNG（白色底 —— 有的 PDF 背景透明，直接转 PNG 会得到黑底，识别率归零）。
+   * @param pageNo 1 起
+   * @param targetWidth 目标像素宽（按比例定高）
+   */
+  window.__ocrRender = function (pageNo, targetWidth) {
+    window.__pageImg = '';
+    var doc = window.__ocrDoc;
+    if (doc === null) {
+      window.__pageImg = 'ERR\t文档还没打开';
+      return;
+    }
+    doc.getPage(pageNo).then(function (page) {
+      var base = page.getViewport({ scale: 1 });
+      var scale = Math.max(0.5, Math.min(4, targetWidth / base.width));
+      var viewport = page.getViewport({ scale: scale });
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      var context = canvas.getContext('2d');
+      context.fillStyle = '#FFFFFF';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      return page.render({ canvasContext: context, viewport: viewport }).promise.then(function () {
+        // PNG 而不是 JPEG：这张图紧接着要 OCR，压缩噪点会让小字糊掉
+        var dataUrl = canvas.toDataURL('image/png');
+        var comma = dataUrl.indexOf(',');
+        page.cleanup();
+        window.__pageImg = 'IMG\t' + dataUrl.substring(comma + 1);
+        log('第 ' + pageNo + ' 页已渲染 ' + canvas.width + 'x' + canvas.height);
+      });
+    }).catch(function (e) {
+      window.__pageImg = 'ERR\t' + String(e && e.message ? e.message : e).replace(/[\t\r\n]/g, ' ');
+      log('第 ' + pageNo + ' 页渲染失败：' + window.__pageImg);
+    });
+  };
 </script>
 </body>
 </html>

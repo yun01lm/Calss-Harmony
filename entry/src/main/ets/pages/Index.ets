@@ -1,5 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
+import { util } from '@kit.ArkTS';
 import { fileIo } from '@kit.CoreFileKit';
 import BuildProfile from 'BuildProfile';
 import { webview } from '@kit.ArkWeb';
@@ -13,7 +14,9 @@ import {
   JwxtTableParser,
   ListFormatParser,
   Minutes,
+  PdfPageImages,
   PdfRunText,
+  PdfScripts,
   SlotDraft,
   TimetableTextParser,
   WeekCalculator,
@@ -30,8 +33,11 @@ import {
   type JwxtSlot,
   type JwxtParseResult,
   OcrLine,
+  type OcrPage,
+  type PageImagePayload,
   type ParseResult,
   type PdfExtractResult,
+  type RawCourse,
   type RecognizedPeriod,
   type ScheduleLike,
   type SlotRow,
@@ -193,6 +199,8 @@ struct Index {
   @State importError: string = '';
   /** pdf.js 这次回传是给"spike"还是给"导入"用的 */
   private pdfPurpose: string = 'spike';
+  /** OCR 兜底时"页数超过上限、只识别了前几页"的提示（等解析结果出来再一起显示） */
+  private pdfOcrNote: string = '';
   /** 导入正在进行（含文件选择器那一小段），用来挡住连点导致的并发解析 */
   private importStarting: boolean = false;
   private importCourses: CourseWithSchedules[] = [];
@@ -792,6 +800,39 @@ struct Index {
           this.importChoiceOpen = false;
           this.startImportTable();
         })
+
+      // 上架审核反馈原文：「应用从教务系统表格导入课表功能需使用网页表格导致未完全遍历，
+      // 无法测试」。审核的测试员手上没有教务系统导出的文件和课表 PDF，而应用的导入**必须**
+      // 依赖外部文件 —— 于是这条通道他永远走不到。这里放两个内置示例（合成数据，无姓名学号），
+      // 让"选文件"换成"点示例"，后面解析 → 预览 → 写入整条路完全一样（见 docs/ACCEPTANCE.md §6.15）。
+      Row({ space: 8 }) {
+        Button('示例：表格课表')
+          .fontSize(12)
+          .height(32)
+          .layoutWeight(1)
+          .backgroundColor('#D9D2CC')
+          .fontColor('#3B3430')
+          .onClick(() => {
+            this.importChoiceOpen = false;
+            this.runTableImportFromRawSample('jwxt-sample.html', '内置示例');
+          })
+        Button('示例：PDF 课表')
+          .fontSize(12)
+          .height(32)
+          .layoutWeight(1)
+          .backgroundColor('#D9D2CC')
+          .fontColor('#3B3430')
+          .onClick(() => {
+            this.importChoiceOpen = false;
+            this.runPdfImportFromRawSample('spike-timetable.pdf', '内置示例');
+          })
+      }
+      .width('100%')
+
+      Text('没有现成的文件？上面两个示例用的是应用内置的合成数据，走的是完全相同的导入流程。')
+        .fontSize(10)
+        .fontColor('#A89C93')
+        .width('100%')
     }
     .width('100%')
     .padding(16)
@@ -1037,6 +1078,18 @@ struct Index {
         .backgroundColor('#9A8C82')
         .onClick(() => {
           this.startSlotImportPdf();
+        })
+
+      // 与「导入课表」里的示例同一个理由：审核/新用户手上不一定有作息表 PDF。
+      // 走的是生产路径 `importSlotsFromPdf`，唯一差别是文件从包内 rawfile 来。
+      Button('没有文件？用内置示例作息表试试')
+        .fontSize(12)
+        .height(36)
+        .width('100%')
+        .backgroundColor('#D9D2CC')
+        .fontColor('#3B3430')
+        .onClick(() => {
+          this.runSlotsImportFromRawSamplePdf();
         })
 
       Text('「粘贴文本」最稳：从网页、微信、或相册自带的文字识别里复制作息行即可，每行要同时包含节次号和起止时间，例如「1  8:00-8:45」。')
@@ -1811,6 +1864,31 @@ struct Index {
               this.runSlotsImportFromRawSample();
             })
 
+          // 只存在于 debug 包：内置**文字层**作息 PDF 走一遍「导入作息 → PDF」。
+          // 这条通道以前只能靠"选文件"验，而文件选择器驱动不了 —— 于是它一直没被端到端验过。
+          Button(this.slotImportStarting ? '识别中…' : '用内置示例作息表跑「导入作息 → PDF」')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#9A8C82')
+            .enabled(!this.slotImportStarting)
+            .onClick(() => {
+              this.runSlotsImportFromRawSamplePdf();
+            })
+
+          // 只存在于 debug 包：**图片版 PDF**（整页是一张图、没有文字层）走「导入 → PDF」。
+          // 验的是上架审核报的那条路：文字层取不到 → 渲染成图 → OCR 兜底。
+          // 这台模拟器没有 OCR 后端，所以这里能验到"渲染 + 落盘"为止（见 docs/ACCEPTANCE.md §6.15）。
+          Button(this.importStarting ? '识别中…' : '用图片版 PDF 跑「导入 → PDF」（文字层为空）')
+            .fontSize(12)
+            .height(32)
+            .width('100%')
+            .backgroundColor('#C77B2B')
+            .enabled(!this.importStarting && !this.importOpen)
+            .onClick(() => {
+              this.runPdfImportFromRawSample('image-timetable.pdf', '图片版样张');
+            })
+
           // 只存在于 debug 包：用内置合成课表 PDF 走一遍**生产路径**的「导入 → PDF」，
           // 用来在改过 viewer.html（CSP / 异常释放）之后复验，绕开无法脚本化的系统文件选择器
           Button(this.importStarting ? '导入中…' : '用内置课表样张跑「导入 → PDF」')
@@ -1823,8 +1901,7 @@ struct Index {
               this.runPdfImportFromRawSample();
             })
           // 只存在于 debug 包：用内置合成教务表格走一遍「导入 → 教务系统表格」
-          Button(this.importStarting ? '导入中…' : '用内置教务表格跑「导入 → 教务表格」')
-            .fontSize(12)
+          Button(this.importStarting ? '导入中…' : '用内置教务表格跑「导入 → 教务表格」')            .fontSize(12)
             .height(32)
             .width('100%')
             .backgroundColor('#7FA98B')
@@ -1920,15 +1997,19 @@ struct Index {
       .onConsole((event) => {
         // pdf.js 的诊断信息（例如 "Unable to load CMap at: …"）只有从这里能看到
         const msg: string = event.message.getMessage();
-        const line: string = msg;
-        const next: string[] = this.webLog.slice(0);
-        next.push(line);
-        while (next.length > 6) {
-          next.shift();
-        }
-        this.webLog = next;
+        this.logWeb(msg);
         return false;
       })
+  }
+
+  /** 往开发者面板的 web 日志里加一行（最多留 6 条，老的挤掉） */
+  private logWeb(line: string): void {
+    const next: string[] = this.webLog.slice(0);
+    next.push(line);
+    while (next.length > 6) {
+      next.shift();
+    }
+    this.webLog = next;
   }
 
   /**
@@ -1976,8 +2057,8 @@ struct Index {
       const base64: string = await PdfJs.readRawBase64(ctx as common.UIAbilityContext, 'spike-grid.pdf');
       const info: SpikeLine = { label: 'PDF 已读入并送去 pdf.js', ok: base64.length > 0, detail: base64.length + ' 字符(base64)' };
       this.pdfLines = [info];
-      await this.runJs(PdfJs.CLEAR_SCRIPT);
-      this.webController.runJavaScript(PdfJs.extractCall(base64));
+      await this.runJs(PdfScripts.CLEAR_SCRIPT);
+      this.webController.runJavaScript(PdfScripts.extractCall(base64));
       const payload: string = await this.pollPdfResult(60000);
       if (payload.length === 0) {
         const timeout: SpikeLine = { label: '解析超时', ok: false, detail: '60 秒内 pdf.js 没有回结果' };
@@ -2009,7 +2090,7 @@ struct Index {
     this.webRequested = true;
     // 30 秒上限：这台模拟器加载 pdf.js（1.5MB）实测要十几秒
     for (let i = 0; i < 150; i++) {
-      const raw: string | null = await this.runJs(PdfJs.READY_SCRIPT);
+      const raw: string | null = await this.runJs(PdfScripts.READY_SCRIPT);
       const ready: string = raw === null ? '' : Index.decodeJsString(raw);
       if (ready === '1') {
         this.webReady = true;
@@ -2084,12 +2165,12 @@ struct Index {
   private async pollPdfResult(timeoutMs: number): Promise<string> {
     const started: number = Date.now();
     while (Date.now() - started < timeoutMs) {
-      const rawError: string | null = await this.runJs(PdfJs.ERROR_SCRIPT);
+      const rawError: string | null = await this.runJs(PdfScripts.ERROR_SCRIPT);
       const errorPayload: string = Index.valueOrEmpty(rawError);
       if (errorPayload.length > 0) {
         return errorPayload;
       }
-      const raw: string | null = await this.runJs(PdfJs.RESULT_SCRIPT);
+      const raw: string | null = await this.runJs(PdfScripts.RESULT_SCRIPT);
       const payload: string = Index.valueOrEmpty(raw);
       if (payload.length > 0) {
         return payload;
@@ -2100,14 +2181,10 @@ struct Index {
   }
 
   /**
-   * 
-unJavaScript 的返回值 → 可用的结果字符串。
+   * `runJavaScript` 的返回值 → 可用的结果字符串。
    *
-   * **必须把 
-ull / undefined 当成"还没有值"**：Web 组件刚挂载、页面还没执行脚本时，
-   * window.__pdfResult 是 undefined，
-unJavaScript 回传的文本就是 
-ull（四个字符）。
+   * **必须把 `null` / `undefined` 当成"还没有值"**：Web 组件刚挂载、页面还没执行脚本时，
+   * `window.__pdfResult` 是 undefined，`runJavaScript` 回传的文本就是 `null`（四个字符）。
    * 以前只判空串，于是这 4 个字符被当成"解析结果"，走到底就报
    * 「无法识别的回传头: null」—— 而在模拟器上偶发一次、重试又好了，最容易误判成解析器的问题。
    */
@@ -2260,8 +2337,12 @@ ull（四个字符）。
       this.importPreview = [];
       this.importWarnings = [];
       this.importCourses = [];
+      // 必须清："表格"通道解析出来的作息会留在这里，下一次走 PDF/截图导入时
+      // 预览里会冒出上一份文件的「一并导入作息」—— 点了就把别的文件的作息写进库
+      this.importSlots = [];
 
-      const outcome: OcrOutcome = await Ocr.readLines(ability, uri);
+      const outcome: OcrOutcome = await Ocr.readLines(ability, uri,
+        '改用「从 PDF 文件」或「从教务系统表格」导入；这个功能依赖系统的离线识别能力。');
       this.importStage = '按网格整理…';
       const parsed: ParseResult = GridFromOcr.parse(outcome.lines, this.totalWeeks);
       this.feedParsedResult(
@@ -2403,20 +2484,14 @@ ull（四个字符）。
     this.importPreview = [];
     this.importWarnings = [];
     this.importCourses = [];
+    // 见 startImportImage 里的同一句：PDF 通道不产作息，必须把表格通道留下的清掉
+    this.importSlots = [];
 
     try {
       const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
       // 回传的分流靠 pdfPurpose：这里一定是"导入课表"
       this.pdfPurpose = 'import';
-      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
-        this.importStage = stage;
-      });
-      // 开发期：把 pdf.js 的原样回传存进沙箱，`hdc file recv` 拉回桌面就能离线复现
-      // （真实课表版式千奇百怪，只靠"装到设备看预览前 6 行"复盘太慢）
-      if (BuildProfile.DEBUG) {
-        Index.dumpRunsForDebug(ctx as common.UIAbilityContext, payload);
-      }
-      this.onPdfPayload(payload);
+      await this.importPdf(ctx as common.UIAbilityContext, base64);
     } catch (e) {
       const err = e as Error;
       this.importBusy = false;
@@ -2425,45 +2500,245 @@ ull（四个字符）。
   }
 
   /**
-   * 抽出 pdf.js 的回传文本（**课表导入与作息导入共用**）。
+   * 「导入 → PDF」在**选到文件之后**的全部流程：文字层 → 解析；没有文字层 → 渲染 + OCR。
    *
-   * 为什么必须共用：这一段包含"首次创建 WebView → 等就绪 → 清旧结果 → 发起 → 轮询"
-   * 五个时序步骤。任何一步顺序不对，症状都是"结果串了上一个文件"或"永远卡在解析中"；
-   * 两处各写一份，早晚有一份漏掉 `CLEAR_SCRIPT`。
+   * 单独抽出来是因为它有两个入口（系统文件选择器、内置示例），两条入口必须走同一段
+   * 兜底逻辑 —— 否则会出现"内置样张导得进、真文件导不进"这种只在真机上出现的差异，
+   * 而命令行验的恰好是前者。
+   */
+  private async importPdf(ability: common.UIAbilityContext, base64: string): Promise<void> {
+    await this.withPdfSession((stage: string) => {
+      this.importStage = stage;
+    }, async () => {
+      const payload: string = await this.extractText(base64);
+      // 开发期：把 pdf.js 的原样回传存进沙箱，`hdc file recv` 拉回桌面就能离线复现
+      // （真实课表版式千奇百怪，只靠"装到设备看预览前 6 行"复盘太慢）
+      if (BuildProfile.DEBUG) {
+        Index.dumpRunsForDebug(ability, payload);
+      }
+      const result: PdfExtractResult = PdfRunText.parse(payload);
+      if (!PdfRunText.hasNoTextLayer(result)) {
+        this.onPdfPayload(payload);
+        return;
+      }
+      this.importStage = '这份 PDF 没有文字层，改用图片识别…';
+      const pages: OcrPage[] = await this.ocrPdfPages(base64, (stage: string) => {
+        this.importStage = stage;
+      }, '可以改用「从课表截图」导入这份文件的截图，或换一份带文字层的 PDF。');
+      this.onPdfOcrPages(pages);
+    });
+  }
+
+  /**
+   * 一次 PDF 会话：确保解析器就绪 → 执行 body → **无论成败都释放 Web**。
+   *
+   * 为什么"释放"只放在这一个地方：文字层解析和 OCR 兜底（渲染成图）用的是**同一个**
+   * WebView。任何一条路径提前 release，后一条就会对着已销毁的组件调 `runJavaScript` ——
+   * 回调永远不来，表现为"卡在解析中…"（`ensureWeb` 会干等 30 秒）。
    *
    * @param onStage 阶段性文案回调（首次加载 pdf.js 要十几秒，得让用户知道在等什么）
-   * @throws 解析器没就绪、或 60 秒没结果
    */
-  private async extractPdfPayload(base64: string, onStage: (stage: string) => void): Promise<string> {
-    // 首次导入要先创建 WebView 并加载 pdf.js（这台模拟器实测十几秒），把原因说清楚
+  private async withPdfSession(onStage: (stage: string) => void, body: () => Promise<void>): Promise<void> {
     onStage(this.webReady ? '解析中…' : '准备解析器（首次较慢）…');
     try {
-      const ready: boolean = await this.ensureWeb();
-      if (!ready) {
-        throw new Error('解析器加载失败（30 秒内没就绪），请重试');
-      }
-      onStage('解析中…');
-      // 进解析之前先确认页面的入口函数真的在：pdfjsLib 没加载时（CSP 拦了 / 文件缺失）
-      // 这个函数根本不会定义，而 runJavaScript 对"调不存在的函数"**不报错**，
-      // 只会一路返回 null，最后表现为"解析超时"或"回传头不对"。
-      const probe: string = Index.valueOrEmpty(await this.runJs('typeof window.__runExtract'));
-      if (probe !== 'function') {
-        throw new Error('解析器页面没就绪（入口函数不存在），请重试；反复出现请反馈');
-      }
-      // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
-      await this.runJs(PdfJs.CLEAR_SCRIPT);
-      this.webController.runJavaScript(PdfJs.extractCall(base64));
-      const payload: string = await this.pollPdfResult(60000);
-      if (payload.length === 0) {
-        throw new Error('解析超时（60 秒内没有结果）');
-      }
-      return payload;
+      await this.ensurePdfReady();
+      await body();
     } finally {
-      // 放在 finally 里而不是调用方：轮询已经结束（成功/超时/抛错都一样），
-      // 这时销毁 Web 不会丢结果；调用方就算忘了释放也不会把 Web 留到下次启动。
+      // 轮询已经结束（成功/超时/抛错都一样），这时销毁 Web 不会丢结果；
+      // 调用方就算忘了释放也不会把 Web 留到下次启动。
       this.releaseWeb();
     }
   }
+
+  /**
+   * 等解析器**真的能用**。
+   *
+   * 两道确认：就绪标记（`PdfScripts.READY_SCRIPT` 现在认的是入口函数，不是 `pdfjsLib`）
+   * + 入口函数探针。探针后面还带 6 秒重试：`runJavaScript` 和页面脚本执行是两条线，
+   * 标记刚变真的那一瞬探针仍可能落在脚本执行之前。一次不等就报错，用户看到的是
+   * "重试一次也许就好"——而审核只会点一次（上架审核就是这么撞上的）。
+   */
+  private async ensurePdfReady(): Promise<void> {
+    const ready: boolean = await this.ensureWeb();
+    if (!ready) {
+      throw new Error('解析器加载失败（30 秒内没就绪），请重试');
+    }
+    const deadline: number = Date.now() + 6000;
+    while (true) {
+      const probe: string = Index.valueOrEmpty(await this.runJs(PdfScripts.ENTRY_SCRIPT));
+      if (probe === 'function') {
+        if (BuildProfile.DEBUG) {
+          // 实测"pdfjsLib 出现 → 入口函数可用"的间隔，就是旧判据的竞态窗口有多宽
+          const win: string = Index.valueOrEmpty(
+            await this.runJs('String(window.__tEntry - window.__tLib)')
+          );
+          this.logWeb('就绪窗口 ' + win + 'ms（pdfjsLib→入口函数）');
+          console.info('[pdfjs] 就绪窗口 ' + win + 'ms（pdfjsLib→入口函数）');
+        }
+        return;
+      }
+      if (Date.now() >= deadline) {
+        break;
+      }
+      await Index.sleep(200);
+    }
+    throw new Error('解析器页面没就绪（入口函数不存在），请重试；反复出现请反馈');
+  }
+
+  /** 取文字层：`清旧结果 → 发起 → 轮询`。异常/超时由调用方处理。 */
+  private async extractText(base64: string): Promise<string> {
+    // 先清掉上一次的结果，否则轮询第一轮就读到旧文件的 payload（把 A 的课当成 B 的导进去）
+    await this.runJs(PdfScripts.CLEAR_SCRIPT);
+    this.webController.runJavaScript(PdfScripts.extractCall(base64));
+    const payload: string = await this.pollPdfResult(60000);
+    if (payload.length === 0) {
+      throw new Error('解析超时（60 秒内没有结果）');
+    }
+    return payload;
+  }
+
+  // ---------------------------------------------------------------- PDF 的 OCR 兜底
+
+  /**
+   * 文字层取不出东西时：**把页面渲染成图片，交给设备端 OCR**。
+   *
+   * 为什么需要它（上架审核实测报上来的）：有两类 PDF 里"有内容"，但一个可读字符都取不到 ——
+   * ① 扫描件（整页就是一张图）；② 字体没有 Unicode 映射（CID 字体缺 ToUnicode，
+   * 字形码翻不成汉字，任何文本抽取器都无能为力）。这两类只有"画成图再识别"这一条路。
+   *
+   * 每页一次完整的 OCR：时间与内存都按页算，所以最多 `PdfPageImages.MAX_PAGES` 页。
+   *
+   * @returns 每页的识别行（坐标是该页 OCR 后的像素坐标）
+   * @param hint 识别失败时给用户的下一步建议（两条通道说法不同，见 `Ocr.readLines`）
+   */
+  private async ocrPdfPages(base64: string, onStage: (stage: string) => void,
+    hint: string): Promise<OcrPage[]> {
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      throw new Error('拿不到 Context，稍后重试');
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+
+    // 1) 在 WebView 里把文档打开（只建对象，不渲染）
+    await this.runJs(PdfScripts.OCR_RESET_SCRIPT);
+    this.webController.runJavaScript(PdfScripts.ocrOpenCall(base64));
+    const numPages: number = await this.waitPdfDocument();
+    const todo: number = PdfPageImages.pagesToRender(numPages);
+    if (todo === 0) {
+      throw new Error('这份 PDF 没有页（文件可能损坏）');
+    }
+
+    const pages: OcrPage[] = [];
+    for (let p = 1; p <= todo; p++) {
+      onStage('第 ' + p + '/' + todo + ' 页：渲染成图…');
+      const img: string = await this.renderPdfPage(p);
+      const parsed: PageImagePayload = PdfPageImages.parse(img);
+      if (!parsed.ok) {
+        throw new Error('第 ' + p + ' 页渲染失败：' + parsed.error);
+      }
+      onStage('第 ' + p + '/' + todo + ' 页：识别文字…（每页几秒）');
+      const path: string = Index.writeBase64File(ability, 'pdf-page-' + p + '.png', parsed.base64);
+      const outcome: OcrOutcome = await Ocr.readLines(ability, path, hint);
+      const page: OcrPage = {
+        pageIndex: p,
+        width: outcome.debug.width,
+        height: outcome.debug.height,
+        lines: outcome.lines,
+      };
+      pages.push(page);
+    }
+    if (numPages > todo) {
+      // 记在字段里而不是直接写 `importWarnings`：`feedParsedResult` 会用解析器的告警
+      // **整体覆盖**那个数组，直接写会被冲掉（用户就永远看不到"只识别了前 3 页"）
+      this.pdfOcrNote = '这份 PDF 有 ' + numPages + ' 页，只识别了前 ' + todo + ' 页';
+    }
+    return pages;
+  }
+
+  /** 等 `__ocrOpen` 把文档打开（30 秒），返回页数 */
+  private async waitPdfDocument(): Promise<number> {
+    const deadline: number = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const error: string = Index.valueOrEmpty(await this.runJs(PdfScripts.OCR_ERROR_SCRIPT));
+      if (error.length > 0) {
+        throw new Error('打开 PDF 失败：' + error);
+      }
+      const state: string = Index.valueOrEmpty(await this.runJs(PdfScripts.OCR_STATE_SCRIPT));
+      if (state === 'ready') {
+        const raw: string = Index.valueOrEmpty(await this.runJs(PdfScripts.OCR_PAGES_SCRIPT));
+        const pages: number = Number.parseInt(raw, 10);
+        return Number.isNaN(pages) ? 0 : pages;
+      }
+      await Index.sleep(200);
+    }
+    throw new Error('打开 PDF 超时（30 秒）');
+  }
+
+  /** 渲染一页（等渲染完成，45 秒），返回 `IMG\t…` / `ERR\t…` 原始回传 */
+  private async renderPdfPage(pageNo: number): Promise<string> {
+    await this.runJs(PdfScripts.PAGE_IMG_RESET_SCRIPT);
+    this.webController.runJavaScript(PdfScripts.ocrRenderCall(pageNo, PdfPageImages.RENDER_WIDTH));
+    const deadline: number = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      const raw: string = Index.valueOrEmpty(await this.runJs(PdfScripts.PAGE_IMG_SCRIPT));
+      if (raw.length > 0) {
+        return raw;
+      }
+      await Index.sleep(200);
+    }
+    throw new Error('第 ' + pageNo + ' 页渲染超时（45 秒）');
+  }
+
+  /**
+   * base64 → 写进 cacheDir 的 PNG。
+   *
+   * 为什么落盘：`Ocr.readLines` 吃的是**文件**（它按 fd 建 ImageSource，避免把整张图解进
+   * ArkTS 堆）。本应用没有任何后台常驻，这几个文件放 cacheDir、系统清理时自己回收。
+   */
+  private static writeBase64File(ability: common.UIAbilityContext, name: string, base64: string): string {
+    const helper: util.Base64Helper = new util.Base64Helper();
+    const bytes: Uint8Array = helper.decodeSync(base64);
+    const path: string = ability.cacheDir + '/' + name;
+    const file: fileIo.File = fileIo.openSync(
+      path,
+      fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
+    );
+    try {
+      fileIo.writeSync(file.fd, bytes.buffer as ArrayBuffer);
+    } finally {
+      fileIo.closeSync(file);
+    }
+    return path;
+  }
+
+  /**
+   * OCR 兜底的结果 → 课表预览（课程导入）。
+   *
+   * 为什么**按页各自**解析再合并：`GridFromOcr` 要靠"星期表头那一行"定位各列，
+   * 两页拼成一张大图会让它把第 2 页的表头当成普通单元格；按页解析就绕开了。
+   */
+  private onPdfOcrPages(pages: OcrPage[]): void {
+    const courses: RawCourse[] = [];
+    const warnings: string[] = [];
+    if (this.pdfOcrNote.length > 0) {
+      warnings.push(this.pdfOcrNote);
+      this.pdfOcrNote = '';
+    }
+    for (const page of pages) {
+      const parsed: ParseResult = GridFromOcr.parse(page.lines, this.totalWeeks);
+      for (const c of parsed.courses) {
+        courses.push(c);
+      }
+      for (const w of parsed.warnings) {
+        warnings.push('第 ' + page.pageIndex + ' 页：' + w);
+      }
+    }
+    this.feedParsedResult(
+      { courses: courses, format: 'PDF（图片识别）', warnings: warnings },
+      '文字层为空，已按图片识别'
+    );
+  }
+
 
   /** pdf.js 回传 → 选解析器 → 生成预览（**不写库**，等用户点按钮） */
   /**
@@ -3117,14 +3392,15 @@ ull（四个字符）。
   }
 
   /**
-   * 调试用（只在 debug 包的开发者入口里）：把内置的作息样图跑一遍**生产路径**的图片通道 ——
+   * 用内置的作息样图跑一遍**生产路径**的图片通道 ——
    * `Ocr.readLines`（解码 + EXIF + OCR）→ `TimetableTextParser` → 校对页。
    *
    * 与真实入口唯一的差别是"图从哪来"：这里从 rawfile 复制到 cacheDir，真机上是系统相册。
    * 之所以需要它：真机相册里不一定有作息表图片，而这一段（识别结果能不能进校对页）
-   * 是图片通道里唯一还没在设备上走过的地方。
+   * 是图片通道里唯一还没在设备上走过的地方。验证真实截图时临时换 `rawName` 指向包内文件
+   * （真实文件不进仓库，见 docs/PRIVACY.md）。
    */
-  private async runSlotsImportFromRawSample(): Promise<void> {
+  private async runSlotsImportFromRawSample(rawName: string = 'spike-schedule.png'): Promise<void> {
     if (this.slotImportStarting) {
       return;
     }
@@ -3139,7 +3415,7 @@ ull（四个字符）。
     this.slotImportSource = '图片（内置样图）';
     this.slotImportStage = '准备样图…';
     try {
-      const data: Uint8Array = await ability.resourceManager.getRawFileContent('spike-schedule.png');
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent(rawName);
       const path: string = ability.cacheDir + '/slots-sample.png';
       const file: fileIo.File = fileIo.openSync(
         path,
@@ -3166,17 +3442,18 @@ ull（四个字符）。
   }
 
   /**
-   * 调试用（只在 debug 包的开发者入口里）：用**内置的合成课表 PDF** 走一遍生产路径的
-   * 「导入 → PDF」通道（`extractPdfPayload` → viewer.html → 预览）。
+   * 用**内置的 PDF** 走一遍生产路径的「导入 → PDF」通道。
+   *
+   * 两个入口共用（所以不是 debug 专属）：
+   * 1. 开发者入口：`spike-timetable.pdf`（合成课表，用来复验 viewer.html 的改动）；
+   * 2. **导入弹窗里的「用内置示例课表试试」**：上架审核的测试员手上没有任何课表文件，
+   *    这条入口让他不用外部文件就能把"解析 → 预览 → 写入"整条路走完（见 docs/ACCEPTANCE.md §6.15）。
    *
    * 存在的理由：这条通道唯一的人工验法是"点导入 → 系统文件选择器 → 挑一份 PDF"，
    * 而**文件选择器没法用命令行驱动**（`uitest dumpLayout` 看不到系统面板）。
-   * 有了这个按钮，改过 viewer.html（比如加 CSP）之后能一条命令复验：
-   * `hdc shell uitest uiInput click …` 点一下，然后看预览里有多少门课。
-   *
-   * 用的是随包发布的 `spike-timetable.pdf`（合成数据，没有姓名），不是真实课表。
    */
-  private async runPdfImportFromRawSample(): Promise<void> {
+  private async runPdfImportFromRawSample(rawName: string = 'spike-timetable.pdf',
+    sourceLabel: string = '内置样张'): Promise<void> {
     if (this.importStarting) {
       return;
     }
@@ -3191,20 +3468,19 @@ ull（四个字符）。
     this.importBusy = true;
     this.importError = '';
     this.importStage = '读取内置样张…';
-    this.importFileName = 'spike-timetable.pdf（内置样张）';
+    this.importFileName = rawName + '（' + sourceLabel + '）';
     this.importFormat = '';
     this.importCount = 0;
     this.importPreview = [];
     this.importWarnings = [];
     this.importCourses = [];
+    // 同上：这份是 PDF，不该继承"表格"通道留下的作息
+    this.importSlots = [];
     try {
-      const data: Uint8Array = await ability.resourceManager.getRawFileContent('spike-timetable.pdf');
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent(rawName);
       const base64: string = PdfFile.toBase64(data);
       this.pdfPurpose = 'import';
-      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
-        this.importStage = stage;
-      });
-      this.onPdfPayload(payload);
+      await this.importPdf(ability, base64);
     } catch (e) {
       this.importBusy = false;
       this.importError = (e as Error).message;
@@ -3214,11 +3490,13 @@ ull（四个字符）。
   }
 
   /**
-   * 调试用（只在 debug 包的开发者入口里）：用**内置的合成教务表格**走一遍生产路径的
-   * 「导入 → 教务系统表格」通道。
+   * 用**内置的合成教务表格**走一遍生产路径的「导入 → 教务系统表格」通道。
    *
-   * 和 PDF 那条一样，是为了绕开"系统文件选择器没法用命令行驱动"。
-   * 内置样张是 	ests/fixtures/jwxt-sample.html（姓名/课程全假），真实导出文件不能进仓库。
+   * 两个入口共用：开发者入口（复验解析器）与**导入弹窗里的「用内置示例课表试试」**
+   * （上架审核的测试员没有教务系统导出的文件，这条入口让他能走完整条路）。
+   *
+   * 和 PDF 那条一样，也是为了绕开"系统文件选择器没法用命令行驱动"。
+   * 内置样张是 `tests/fixtures/jwxt-sample.html`（姓名/课程全假），真实导出文件不能进仓库。
    */
   private async runTableImportFromRawSample(rawName: string = 'jwxt-sample.html',
     sourceLabel: string = '内置样张'): Promise<void> {
@@ -3277,7 +3555,7 @@ ull（四个字符）。
     this.finishSlotParse(TimetableTextParser.linesFromText(text), '粘贴文本');
   }
 
-  /** 通道三：PDF 文字层（复用课程导入那套 pdf.js） */
+  /** 通道三：PDF（文字层优先，取不到文字就渲染成图交给 OCR —— 与课程导入同一套兜底） */
   private async startSlotImportPdf(): Promise<void> {
     if (this.slotImportStarting || this.importStarting) {
       return;
@@ -3301,22 +3579,74 @@ ull（四个字符）。
       }
       this.slotImportStage = '读取文件…';
       const base64: string = await PdfFile.readBase64(picked.uri, picked.size);
-      const payload: string = await this.extractPdfPayload(base64, (stage: string) => {
-        this.slotImportStage = stage;
-      });
+      await this.importSlotsFromPdf(ctx as common.UIAbilityContext, base64, 'PDF（' + picked.name + '）');
+    } catch (e) {
+      this.slotImportPhase = 'error';
+      this.slotImportError = (e as Error).message;
+    } finally {
+      this.slotImportStarting = false;
+    }
+  }
+
+  /**
+   * 「导入作息 → PDF」在**选到文件之后**的全部流程（两个入口共用：文件选择器、内置示例）。
+   *
+   * 与课程导入的差别只在"拿到文字之后交给谁"：这里交给 `TimetableTextParser`（纯文本行），
+   * 课程那边交给网格/列表解析器。文字从哪来（文字层 or OCR）两条通道完全一致。
+   */
+  private async importSlotsFromPdf(ability: common.UIAbilityContext, base64: string,
+    source: string): Promise<void> {
+    await this.withPdfSession((stage: string) => {
+      this.slotImportStage = stage;
+    }, async () => {
+      const payload: string = await this.extractText(base64);
       const result: PdfExtractResult = PdfRunText.parse(payload);
-      if (!result.ok) {
+      if (!result.ok && !PdfRunText.hasNoTextLayer(result)) {
         throw new Error('解析失败：' + result.error);
       }
-      if (result.runs.length === 0) {
-        throw new Error('这份 PDF 里没有可读文字（可能是扫描件）。扫描件请用「识别图片」。');
+      if (result.ok && result.runs.length > 0) {
+        // 碎片 → 视觉行（`PdfRunText.toLines`），再交给作息解析器
+        const textLines: string[] = PdfRunText.toLines(result.runs);
+        this.finishSlotParse(TimetableTextParser.linesFromText(textLines.join('\n')), source);
+        return;
       }
-      // 碎片 → 视觉行（`PdfRunText.toLines`），再交给作息解析器
-      const textLines: string[] = PdfRunText.toLines(result.runs);
-      this.finishSlotParse(
-        TimetableTextParser.linesFromText(textLines.join('\n')),
-        'PDF（' + picked.name + '）'
-      );
+      // 扫描件 / 字形码无 Unicode 映射：渲染成图再识别
+      const pages: OcrPage[] = await this.ocrPdfPages(base64, (stage: string) => {
+        this.slotImportStage = stage;
+      }, '可以改用「识别图片」或「粘贴文本」导入作息。');
+      this.finishSlotParse(PdfPageImages.stackPages(pages), source + ' · 图片识别');
+      // `finishSlotParse` 用解析器的告警整体覆盖了数组，页数提示要在这里补回去
+      if (this.pdfOcrNote.length > 0 && this.slotImportPhase === 'review') {
+        this.slotImportWarnings = this.slotImportWarnings.concat([this.pdfOcrNote]);
+      }
+      this.pdfOcrNote = '';
+    });
+  }
+
+  /**
+   * 「导入作息 → PDF」的内置示例（发布版可见，上架审核用）。
+   *
+   * 用的是随包发布的**合成作息表 PDF**（`sample-slots.pdf`，没有姓名学号），
+   * 走的是与真实文件完全相同的 `importSlotsFromPdf` —— 只有"文件从哪来"不同。
+   */
+  private async runSlotsImportFromRawSamplePdf(): Promise<void> {
+    if (this.slotImportStarting) {
+      return;
+    }
+    const ctx: common.Context | undefined = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      return;
+    }
+    const ability: common.UIAbilityContext = ctx as common.UIAbilityContext;
+    this.slotImportStarting = true;
+    this.openSlotsImport();
+    this.slotImportPhase = 'parsing';
+    this.slotImportSource = '内置示例';
+    this.slotImportStage = '读取内置示例…';
+    try {
+      const data: Uint8Array = await ability.resourceManager.getRawFileContent('sample-slots.pdf');
+      const base64: string = PdfFile.toBase64(data);
+      await this.importSlotsFromPdf(ability, base64, '内置示例 PDF');
     } catch (e) {
       this.slotImportPhase = 'error';
       this.slotImportError = (e as Error).message;

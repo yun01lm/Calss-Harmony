@@ -1,6 +1,6 @@
 {
   "name": "calss-harmony",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "简课表 · 鸿蒙版（纯逻辑层用 Node 原生跑测试，不需要鸿蒙 SDK）",

@@ -95,6 +95,23 @@ export class PdfRunText {
     return lines;
   }
 
+  /** 回传里"一个可读字符都没有"时用的错误前缀（`viewer.html` 写的那句） */
+  static readonly NO_TEXT_PREFIX: string = '没有可读文本';
+
+  /**
+   * 这份 PDF 是不是**根本没有文字层**（该转 OCR 兜底），而不是"解析失败"。
+   *
+   * 两种情况都算：`viewer.html` 明确报「没有可读文本：N 页 / M 个文本项…」，
+   * 或者头是 OK 但一个片段都没有。**区分很重要**：加密/损坏的 PDF 也会 `!ok`，
+   * 那种文件渲染出来同样是黑的，转 OCR 只会让用户多等十几秒再看到另一个错。
+   */
+  static hasNoTextLayer(result: PdfExtractResult): boolean {
+    if (!result.ok) {
+      return result.error.startsWith(PdfRunText.NO_TEXT_PREFIX);
+    }
+    return result.runs.length === 0;
+  }
+
   static parse(payload: string): PdfExtractResult {
     const runs: PdfTextRun[] = [];
     if (payload.length === 0) {

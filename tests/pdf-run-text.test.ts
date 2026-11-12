@@ -105,3 +105,18 @@ test('parse：空文本片段保留（空串也是合法 run，由解析器决�
   assert.equal(r.runs.length, 1);
   assert.equal(r.runs[0].text, '');
 });
+
+test('hasNoTextLayer：文字层为空的两种表现都算（该走 OCR 兜底）', () => {
+  // ① viewer.html 明确报"没有可读文本"（扫描件 / 字形码没有 Unicode 映射）
+  const noText = PdfRunText.parse('ERR\t没有可读文本：1 页 / 0 个文本项，其中 0 个取不出字符\nEND');
+  assert.equal(noText.ok, false);
+  assert.equal(PdfRunText.hasNoTextLayer(noText), true);
+  // ② 头是 OK 但一个片段都没有
+  assert.equal(PdfRunText.hasNoTextLayer(PdfRunText.parse('OK\nEND')), true);
+});
+
+test('hasNoTextLayer：加密/损坏/超时**不算**没有文字层（转 OCR 只会多等十几秒再报另一个错）', () => {
+  assert.equal(PdfRunText.hasNoTextLayer(PdfRunText.parse('ERR\tInvalid PDF structure\nEND')), false);
+  assert.equal(PdfRunText.hasNoTextLayer(PdfRunText.parse('')), false);
+  assert.equal(PdfRunText.hasNoTextLayer(PdfRunText.parse(SAMPLE)), false);
+});

@@ -70,6 +70,7 @@ node tools/check-architecture.mjs      # 依赖方向 + .ts 扩展名
 | P8 签名体检 + API 14 | 脚本自检 | 装得上、跑得起来 | 待验（同一台机器，签名相同） |
 | P9 上架包（发布签名） | `sign-release.mjs` 断言通过（release/bundle/摘要） | 发布签名 HAP 卸载旧包后装得上、启动正常 | 待验：包已合格、签名类型正确；**真机装机未验** |
 | P10 上架自检 UX 整改 | `check-ui.mjs` + CellLayout 2 条新断言 | 交叉淡化实帧抓到（evidence/70）、字号实测不裁 | 待验：**改完要再传一次自检才知道过没过**（服务端跑） |
+| P11 审核退回 3 条整改 | `pdf-page-images` 7 条 + `hasNoTextLayer` 2 条（共 355） | 真实课表 PDF 认出 14 门；图片版 PDF 渲染出 1400×1866 PNG、OCR 调用到达；示例 PDF 作息认出 10 节 | 待验：**PDF→图→OCR 的识别质量**（模拟器无 OCR 后端）；审核信息要在 AGC 里填 |
 
 > P9 的来源：自动签名签出来的包，profile 里是 `"type":"debug"`、证书 CN 结尾是 `,Development`、
 > 还带一份 `debug-info.device-ids` 白名单 —— 用 `hap-sign-tool verify-app` 回读包内签名实测得到。
@@ -78,6 +79,12 @@ node tools/check-architecture.mjs      # 依赖方向 + .ts 扩展名
 > P10 的来源：0.1.0 上传后自检报 UX 4 条（字体「不通过」+ 转场/滑动 3 条警告），
 > 根因是 7fp 的钟点小字、`if` 直接增删节点、`Scroll` 默认无回弹。细节与证据见
 > `docs/ACCEPTANCE.md` §6.14；版本随之升到 0.1.1 / 1000001。
+>
+> P11 的来源：0.1.1 的审核退回三条（导入"未完全遍历/无法测试"、PDF 解析器"没就绪"、
+> PDF"没有可读文本"）。根因是**就绪判据看错了对象**（`pdfjsLib` 早于入口函数 7~11ms）、
+> **内联 CMap 只有 5 个名字**（真实中文 PDF 的编码不止 UniGB-UCS2-H）、**有些 PDF 没有文字层**，
+> 以及**导入必须依赖外部文件**（审核员手上没有）。细节、证据与仍未验的部分见
+> `docs/ACCEPTANCE.md` §6.15；版本升到 0.1.2 / 1000002。
 
 真机上还需要跑的**三件事**（都不改代码，只是验证）：
 

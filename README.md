@@ -21,6 +21,7 @@
 | 3d | 作息：编辑（节次号/分组/起止）、加一节、从其他课表复制；**导入作息**三条通道（图片 OCR / 粘贴文本 / PDF）→ 校对页 → 整表替换 —— **295 断言 + 实机（OCR 识别待真机）** | ✅ |
 | 4 | 验收：冷启动 / 体积 / 零权限（见 `docs/ACCEPTANCE.md`）；**真机 Pura 70 / HarmonyOS 7.0 实测**：冷启动 381 ms（release）、图片 OCR 跑通 | ✅ |
 | 5 | 上架：发布签名 `.app`、图标 / 9:16 截图 / 隐私政策、隐私声明表单；**上架自检 4 条 UX 整改**（字号 ≥8fp、页面转场淡入淡出 300 ms、滑动边界回弹）—— **346 断言** | ✅ 材料与整改完成（0.1.1）；自检复测在 AGC 服务端，真机仍待连 |
+| 6 | 审核退回 3 条：导入"测不到"、PDF 解析器"没就绪"、PDF"没有可读文本" —— 就绪判据改认入口函数、CMap 补到全量 GB、**无文字层 PDF 走渲染+OCR 兜底**、导入面板内置示例让审核可遍历 —— **355 断言** | ✅ 完成（0.1.2 / 1000002）；`docs/ACCEPTANCE.md` §6.15 |
 
 ## 环境
 
@@ -73,7 +74,7 @@ $env:PATH = "$ide\tools\node;$env:PATH"
 
 ```powershell
 npm run build:app       # release 版 App Pack，产出 build/outputs/default/*-unsigned.app
-npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-0.1.1-release.app
+npm run sign:release    # 换发布材料重签 + 当场校验，产出 dist/jiankebiao-0.1.2-release.app
 ```
 
 应用市场那个上传框写的是「支持 APP 格式」，要 **`.app`**（App Pack），不是 `.hap`。
