@@ -526,7 +526,7 @@ sha256 `5be2fe8550beabf0d4b01102e1adaf85f20cf1caee5b78895c551ab274d4a057`），
   + `STSong-Light`、无 ToUnicode，2 页。
 - **图片版 PDF 的渲染链路真的通**：`image-timetable.pdf`（整页一张图，`totalItems=0`）
   → 预览报 OCR 不可用之前，`cacheDir/pdf-page-1.png` 已生成：**1400×1866、267,175 字节**，
-  拉回来肉眼看是清晰的课表网格（渲染在白底上、字没糊）。
+  拉回来肉眼看是清晰的课表网格（渲染在白底上、字没糊）：`docs/evidence/72-pdf-page-render.png`。
 - **作息 PDF 通道**（以前只能靠"选文件"验、从没端到端跑过）：内置文字层样张
   `sample-slots.pdf` → 校对页「认出 10 节（内置示例 PDF）」，上午/下午分组与起止时间
   全部正确，并给出"当前作息有 12 节，这次只认出 10 节"的核对提示。
